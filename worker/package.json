@@ -1,0 +1,17 @@
+{
+  "name": "codex-worker",
+  "version": "1.0.0",
+  "description": "Codex Judge Worker - consumes submissions from RabbitMQ",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.3",
+    "dockerode": "^4.0.0",
+    "pg": "^8.12.0",
+    "ioredis": "^5.3.2",
+    "socket.io-client": "^4.7.4",
+    "uuid": "^9.0.0"
+  }
+}

@@ -1,0 +1,55 @@
+# =========================
+# Node.js / Dependencies
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+# Environment Variables (CRITICAL)
+# =========================
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+*.pem
+
+# =========================
+# Build Outputs (Frontend/Backend)
+# =========================
+dist/
+build/
+out/
+.next/
+
+# =========================
+# Execution & Temporary Files
+# =========================
+# Ignore the temporary folders where the worker saves user code before passing to Docker
+temp/
+tmp/
+/worker/temp/
+/worker/submissions/
+*.class
+*.exe
+*.o
+
+# =========================
+# Docker & Database Data
+# =========================
+# Ignore local database/queue storage if you map Docker volumes locally
+pgdata/
+redisdata/
+rabbitmqdata/
+data/
+
+# =========================
+# IDE & OS Files
+# =========================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
