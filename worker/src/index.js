@@ -15,6 +15,8 @@ const pool = new Pool({
 // Redis (for leaderboard)
 const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
 
+const RUN_RESULT_KEY = (runId) => `run:${runId}`;
+
 // Worker identification
 const WORKER_ID = `worker-${process.pid}-${Date.now().toString(36)}`;
 
@@ -108,7 +110,7 @@ async function getLeaderboard(contestId) {
 
 async function processSubmission(msg, channel) {
   const data = JSON.parse(msg.content.toString());
-  console.log(`[${WORKER_ID}] Processing submission: ${data.submission_id} (${data.language})`);
+  console.log(`[${WORKER_ID}] Processing ${data.is_run ? 'run' : 'submission'}: ${data.is_run ? data.run_id : data.submission_id} (${data.language})`);
 
   try {
     let result;
@@ -138,16 +140,29 @@ async function processSubmission(msg, channel) {
         result.memory_kb = result.memory_kb || 0;
       }
 
-      // Update submission in database
-      await pool.query(
-        `UPDATE submissions SET verdict = $1, runtime_ms = $2, memory_kb = $3,
-         stdout = $4, stderr = $5, passed_count = $6, total_count = $7
-         WHERE id = $8`,
-        [result.verdict, result.runtime_ms, result.memory_kb,
-         result.stdout || '', result.stderr || '',
-         result.passed_count || 0, result.total_count || 0,
-         data.submission_id]
-      );
+      // Ephemeral run: do NOT write anything to submissions table
+      if (data.run_id) {
+        // Store ephemeral run result for polling fallback (TTL)
+        await redis.set(
+          RUN_RESULT_KEY(data.run_id),
+          JSON.stringify({
+            run_id: data.run_id,
+            user_id: data.user_id,
+            contest_id: data.contest_id,
+            problem_id: data.problem_id,
+            verdict: result.verdict,
+            runtime_ms: result.runtime_ms || 0,
+            memory_kb: result.memory_kb || 0,
+            stdout: result.stdout || '',
+            stderr: result.stderr || '',
+            passed_count: result.passed_count || 0,
+            total_count: result.total_count || 0,
+            finished_at: new Date().toISOString(),
+          }),
+          'EX',
+          300
+        );
+      }
     } else {
       // "Submit" mode — run against ALL test cases (sample + hidden)
       const tcResult = await pool.query(
@@ -172,8 +187,11 @@ async function processSubmission(msg, channel) {
          data.submission_id]
       );
 
-      // Update leaderboard if it's a real submission
-      if (data.contest_id) {
+      // Update leaderboard only for REAL submissions during contest window
+      const now = new Date();
+      const contestEnded = data.contest_end_time ? now > new Date(data.contest_end_time) : false;
+      const st = data.submission_type ? String(data.submission_type).toUpperCase() : 'REAL';
+      if (data.contest_id && !contestEnded && st === 'REAL') {
         await updateLeaderboard(
           data.contest_id, data.user_id, data.problem_id,
           data.username, result.verdict, data.contest_start_time
@@ -190,6 +208,8 @@ async function processSubmission(msg, channel) {
         // Emit submission status to all connected clients
         socket.emit('worker:submission_result', {
           submission_id: data.submission_id,
+          run_id: data.run_id,
+          is_run: !!data.is_run,
           user_id: data.user_id,
           contest_id: data.contest_id,
           problem_id: data.problem_id,
@@ -228,11 +248,33 @@ async function processSubmission(msg, channel) {
   } catch (err) {
     console.error(`[${WORKER_ID}] Error processing submission:`, err);
 
-    // Update as internal error
-    await pool.query(
-      `UPDATE submissions SET verdict = 'Internal Error', stderr = $1 WHERE id = $2`,
-      [err.message, data.submission_id]
-    );
+    if (data.is_run && data.run_id) {
+      await redis.set(
+        RUN_RESULT_KEY(data.run_id),
+        JSON.stringify({
+          run_id: data.run_id,
+          user_id: data.user_id,
+          contest_id: data.contest_id,
+          problem_id: data.problem_id,
+          verdict: 'Internal Error',
+          runtime_ms: 0,
+          memory_kb: 0,
+          stdout: '',
+          stderr: err.message,
+          passed_count: 0,
+          total_count: 0,
+          finished_at: new Date().toISOString(),
+        }),
+        'EX',
+        300
+      );
+    } else if (data.submission_id) {
+      // Update as internal error
+      await pool.query(
+        `UPDATE submissions SET verdict = 'Internal Error', stderr = $1 WHERE id = $2`,
+        [err.message, data.submission_id]
+      );
+    }
 
     channel.ack(msg); // Don't requeue failed messages
   }

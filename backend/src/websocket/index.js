@@ -40,7 +40,7 @@ function setupWebSocket(io) {
 
     // Worker events — relay submission results to clients
     socket.on('worker:submission_result', (data) => {
-      console.log(`Worker result: submission ${data.submission_id} → ${data.verdict}`);
+      console.log(`Worker result: ${data.is_run ? `run ${data.run_id}` : `submission ${data.submission_id}`} → ${data.verdict}`);
       // Broadcast to all clients (filtered client-side by user_id)
       io.emit('submission:status', data);
     });

@@ -6,6 +6,7 @@ const morgan = require('morgan');
 const { Server } = require('socket.io');
 const { pool } = require('./config/db');
 const { connectRabbitMQ } = require('./services/publisher');
+const { runMigrations } = require('./services/migrate');
 const { setupWebSocket } = require('./websocket');
 
 // Routes
@@ -14,6 +15,7 @@ const contestRoutes = require('./routes/contests');
 const problemRoutes = require('./routes/problems');
 const testcaseRoutes = require('./routes/testcases');
 const submissionRoutes = require('./routes/submissions');
+const runRoutes = require('./routes/runs');
 
 const app = express();
 const server = http.createServer(app);
@@ -58,15 +60,43 @@ app.use('/api/contests', contestRoutes);
 app.use('/api/problems', problemRoutes);
 app.use('/api/testcases', testcaseRoutes);
 app.use('/api/submissions', submissionRoutes);
+app.use('/api/runs', runRoutes);
 
 // Leaderboard API (public)
 const { getLeaderboard } = require('./services/leaderboard');
+const { getLeaderboardAt } = require('./services/leaderboard_db');
 const { authMiddleware } = require('./middleware/auth');
 
 app.get('/api/leaderboard/:contestId', authMiddleware, async (req, res) => {
   try {
+    const { relative_timestamp } = req.query;
+
+    // Virtual time-travel: if relative_timestamp is provided, reconstruct from Postgres
+    // using cutoff = contest_start_time + relative_timestamp(ms).
+    if (relative_timestamp !== undefined) {
+      const contestRes = await pool.query('SELECT start_time FROM contests WHERE id = $1', [req.params.contestId]);
+      if (contestRes.rows.length === 0) return res.status(404).json({ error: 'Contest not found' });
+      const start = new Date(contestRes.rows[0].start_time);
+
+      let cutoff;
+      const raw = String(relative_timestamp);
+      // Accept ISO datetime, unix ms timestamp, or ms offset from contest start.
+      if (raw.includes('T') || raw.includes('-')) {
+        cutoff = new Date(raw);
+      } else {
+        const n = Number(raw);
+        if (!Number.isFinite(n)) return res.status(400).json({ error: 'relative_timestamp must be ISO datetime or a number' });
+        // If n looks like an epoch ms, use it; otherwise treat as offset-ms from start.
+        cutoff = n > 100000000000 ? new Date(n) : new Date(start.getTime() + n);
+      }
+
+      const leaderboard = await getLeaderboardAt(req.params.contestId, cutoff);
+      return res.json({ leaderboard, mode: 'time_travel', cutoff: cutoff.toISOString() });
+    }
+
+    // Default: Redis live leaderboard
     const leaderboard = await getLeaderboard(req.params.contestId);
-    res.json({ leaderboard });
+    res.json({ leaderboard, mode: 'live' });
   } catch (err) {
     console.error('Leaderboard fetch error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -87,6 +117,9 @@ async function start() {
     // Test PostgreSQL
     await pool.query('SELECT 1');
     console.log('✓ PostgreSQL connected');
+
+    // Apply schema migrations (safe no-op if already applied)
+    await runMigrations(pool);
 
     // Connect RabbitMQ
     await connectRabbitMQ();

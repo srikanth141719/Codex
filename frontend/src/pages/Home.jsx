@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import Timer from '../components/Timer';
 import {
   Calendar, Clock, Users, ChevronRight, Trophy, Plus, Zap,
-  Code2, ArrowRight, Sparkles, CircleDot
+  Code2, ArrowRight, Sparkles, CircleDot, MoreVertical, PlayCircle, BarChart3
 } from 'lucide-react';
 
 function ContestCard({ contest }) {
+  const navigate = useNavigate();
+  const [menuOpen, setMenuOpen] = useState(false);
   const now = new Date();
   const start = new Date(contest.start_time);
   const end = new Date(contest.end_time);
@@ -27,12 +29,17 @@ function ContestCard({ contest }) {
     statusDot = 'bg-gray-400';
   }
 
+  const canShowMenu = status === 'Live' || status === 'Ended';
+
   return (
-    <Link
-      to={`/contests/${contest.id}`}
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => navigate(`/contests/${contest.id}`)}
+      onKeyDown={(e) => { if (e.key === 'Enter') navigate(`/contests/${contest.id}`); }}
       className="group relative bg-white rounded-2xl border border-gray-200 p-6 
                hover:border-emerald-300 hover:shadow-xl hover:shadow-emerald-100/50
-               transition-all duration-300 transform hover:-translate-y-0.5"
+               transition-all duration-300 transform hover:-translate-y-0.5 cursor-pointer"
     >
       {/* Status indicator */}
       <div className="flex items-center justify-between mb-4">
@@ -42,7 +49,47 @@ function ContestCard({ contest }) {
             {status}
           </span>
         </div>
-        <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-emerald-500 group-hover:translate-x-1 transition-all" />
+        <div className="flex items-center gap-2">
+          {canShowMenu && (
+            <div className="relative">
+              <button
+                onClick={(e) => { e.stopPropagation(); setMenuOpen(v => !v); }}
+                className="p-2 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-700 transition-colors"
+                aria-label="Contest actions"
+              >
+                <MoreVertical className="w-4 h-4" />
+              </button>
+              {menuOpen && (
+                <div
+                  className="absolute right-0 mt-2 w-56 bg-white border border-gray-200 rounded-xl shadow-xl z-20 overflow-hidden"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    className="w-full text-left px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                    onClick={() => navigate(`/contests/${contest.id}?view=leaderboard`)}
+                  >
+                    <BarChart3 className="w-4 h-4 text-amber-600" />
+                    See Leaderboard
+                  </button>
+                  <button
+                    className="w-full text-left px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                    onClick={() => {
+                      const durationMs = Math.max(1, end - start);
+                      const key = `codex_virtual_${contest.id}`;
+                      localStorage.setItem(key, JSON.stringify({ startMs: Date.now(), durationMs }));
+                      localStorage.removeItem(`${key}_score`);
+                      navigate(`/contests/${contest.id}?virtual=1`);
+                    }}
+                  >
+                    <PlayCircle className="w-4 h-4 text-emerald-600" />
+                    Take a Virtual Contest
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-emerald-500 group-hover:translate-x-1 transition-all" />
+        </div>
       </div>
 
       {/* Title */}
@@ -79,7 +126,7 @@ function ContestCard({ contest }) {
 
       {/* Hover accent line */}
       <div className="absolute bottom-0 left-4 right-4 h-0.5 bg-gradient-to-r from-emerald-500 to-green-500 rounded-full scale-x-0 group-hover:scale-x-100 transition-transform duration-300" />
-    </Link>
+    </div>
   );
 }
 

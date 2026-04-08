@@ -2,13 +2,14 @@ const express = require('express');
 const { query } = require('../config/db');
 const { authMiddleware } = require('../middleware/auth');
 const { publishSubmission } = require('../services/publisher');
+const { v4: uuidv4 } = require('uuid');
 
 const router = express.Router();
 
 // POST /api/submissions — Submit code for judging
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    const { problem_id, contest_id, language, code } = req.body;
+    const { problem_id, contest_id, language, code, submission_type } = req.body;
 
     if (!problem_id || !contest_id || !language || !code) {
       return res.status(400).json({ error: 'problem_id, contest_id, language, and code are required' });
@@ -31,7 +32,8 @@ router.post('/', authMiddleware, async (req, res) => {
     const userEmail = req.user.email.toLowerCase();
 
     // Check allowlist
-    if (contest.creator_id !== req.user.id && !contest.allowlist.includes(userEmail)) {
+    const isPublic = !contest.allowlist || contest.allowlist.length === 0;
+    if (!isPublic && contest.creator_id !== req.user.id && !contest.allowlist.includes(userEmail)) {
       return res.status(403).json({ error: 'You are not allowed in this contest' });
     }
 
@@ -40,8 +42,22 @@ router.post('/', authMiddleware, async (req, res) => {
     if (now < new Date(contest.start_time)) {
       return res.status(403).json({ error: 'Contest has not started yet' });
     }
-    if (now > new Date(contest.end_time)) {
-      return res.status(403).json({ error: 'Contest has ended' });
+    const hasEnded = now > new Date(contest.end_time);
+
+    // Determine submission type:
+    // - Default REAL during contest
+    // - PRACTICE if contest ended (upsolving)
+    // - VIRTUAL allowed explicitly (never affects official leaderboard)
+    let st = submission_type ? String(submission_type).toUpperCase() : null;
+    if (st && !['REAL', 'PRACTICE', 'VIRTUAL'].includes(st)) {
+      return res.status(400).json({ error: 'submission_type must be REAL, PRACTICE, or VIRTUAL' });
+    }
+    if (!st) {
+      st = hasEnded ? 'PRACTICE' : 'REAL';
+    }
+    if (hasEnded && st === 'REAL') {
+      // Prevent accidental REAL after contest
+      st = 'PRACTICE';
     }
 
     // Verify problem belongs to contest
@@ -55,9 +71,9 @@ router.post('/', authMiddleware, async (req, res) => {
 
     // Create submission record
     const submissionResult = await query(
-      `INSERT INTO submissions (user_id, problem_id, contest_id, language, code, verdict)
-       VALUES ($1, $2, $3, $4, $5, 'Pending') RETURNING *`,
-      [req.user.id, problem_id, contest_id, language, code]
+      `INSERT INTO submissions (user_id, problem_id, contest_id, language, code, verdict, submission_type)
+       VALUES ($1, $2, $3, $4, $5, 'Pending', $6) RETURNING *`,
+      [req.user.id, problem_id, contest_id, language, code, st]
     );
 
     const submission = submissionResult.rows[0];
@@ -72,6 +88,8 @@ router.post('/', authMiddleware, async (req, res) => {
       language,
       code,
       contest_start_time: contest.start_time,
+      contest_end_time: contest.end_time,
+      submission_type: st,
     });
 
     res.status(201).json({ submission });
@@ -94,18 +112,29 @@ router.post('/run', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Unsupported language' });
     }
 
-    // Create a "run" submission (not counted for scoring)
-    const submissionResult = await query(
-      `INSERT INTO submissions (user_id, problem_id, contest_id, language, code, verdict)
-       VALUES ($1, $2, $3, $4, $5, 'Running') RETURNING *`,
-      [req.user.id, problem_id || '00000000-0000-0000-0000-000000000000', contest_id || '00000000-0000-0000-0000-000000000000', language, code]
-    );
+    // Ephemeral run: do NOT write to submissions table.
+    // We still validate contest access if contest_id is provided.
+    if (contest_id) {
+      const contestResult = await query('SELECT * FROM contests WHERE id = $1', [contest_id]);
+      if (contestResult.rows.length === 0) return res.status(404).json({ error: 'Contest not found' });
+      const contest = contestResult.rows[0];
+      const userEmail = req.user.email.toLowerCase();
+      const isPublic = !contest.allowlist || contest.allowlist.length === 0;
+      if (!isPublic && contest.creator_id !== req.user.id && !contest.allowlist.includes(userEmail)) {
+        return res.status(403).json({ error: 'You are not allowed in this contest' });
+      }
+      const now = new Date();
+      if (now < new Date(contest.start_time)) {
+        return res.status(403).json({ error: 'Contest has not started yet' });
+      }
+      // Runs are allowed even after contest end (for practice/debugging)
+    }
 
-    const submission = submissionResult.rows[0];
+    const run_id = uuidv4();
 
     // Publish to queue with run flag
     publishSubmission({
-      submission_id: submission.id,
+      run_id,
       user_id: req.user.id,
       username: req.user.username,
       problem_id,
@@ -116,7 +145,7 @@ router.post('/run', authMiddleware, async (req, res) => {
       custom_input: custom_input || null,
     });
 
-    res.status(201).json({ submission });
+    res.status(201).json({ run_id });
   } catch (err) {
     console.error('Run error:', err);
     res.status(500).json({ error: 'Internal server error' });

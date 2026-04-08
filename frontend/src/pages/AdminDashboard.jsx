@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import Leaderboard from '../components/Leaderboard';
 import { createSocket } from '../utils/socket';
 import {
-  ArrowLeft, Settings, Clock, Users, Edit3, Save, Plus, Trash2,
-  CheckSquare, Square, RefreshCw, Eye, Trophy, BarChart3, FileText,
+  ArrowLeft, Settings, Clock, Users, Plus, Trash2,
+  CheckSquare, Square, RefreshCw, Eye, Trophy, BarChart3, FileText, Save,
   Shield, Sparkles
 } from 'lucide-react';
 
@@ -19,7 +19,6 @@ export default function AdminDashboard() {
   const [leaderboard, setLeaderboard] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('leaderboard');
-  const [editMode, setEditMode] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [editTitle, setEditTitle] = useState('');
@@ -27,6 +26,7 @@ export default function AdminDashboard() {
   const [editStart, setEditStart] = useState('');
   const [editEnd, setEditEnd] = useState('');
   const [editAllowlist, setEditAllowlist] = useState('');
+  const [dirty, setDirty] = useState(false);
 
   const loadContest = useCallback(async () => {
     try {
@@ -46,6 +46,7 @@ export default function AdminDashboard() {
       setEditStart(toLocal(c.start_time));
       setEditEnd(toLocal(c.end_time));
       setEditAllowlist((c.allowlist || []).join('\n'));
+      setDirty(false);
     } catch (err) {
       console.error(err);
     } finally {
@@ -75,66 +76,100 @@ export default function AdminDashboard() {
     return () => socket.disconnect();
   }, [id, token, apiFetch]);
 
-  async function saveContestDetails() {
+  async function saveAllChanges() {
     setSaving(true);
     try {
       const startDT = new Date(editStart);
       const endDT = new Date(editEnd);
+      const allowlist = editAllowlist.split(/[\n,;]+/).map(e => e.trim()).filter(Boolean);
       await apiFetch(`/contests/${id}`, {
         method: 'PUT',
         body: JSON.stringify({
-          title: editTitle, description: editDescription,
-          start_time: startDT.toISOString(), end_time: endDT.toISOString(),
-          allowlist: editAllowlist.split(/[\n,;]+/).map(e => e.trim()).filter(Boolean),
+          title: editTitle,
+          description: editDescription,
+          start_time: startDT.toISOString(),
+          end_time: endDT.toISOString(),
+          allowlist,
+          problems,
         }),
       });
-      setEditMode(false);
       loadContest();
     } catch (err) { alert(err.message); }
     finally { setSaving(false); }
   }
 
-  async function addNewProblem() {
-    try {
-      await apiFetch(`/problems/${id}`, {
-        method: 'POST',
-        body: JSON.stringify({ title: `Problem ${problems.length + 1}`, description: 'Enter problem description...' }),
-      });
-      loadContest();
-    } catch (err) { alert(err.message); }
+  function addNewProblem() {
+    const tmpId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setProblems(prev => {
+      const next = [...prev, {
+        id: tmpId,
+        title: `Problem ${prev.length + 1}`,
+        description: 'Enter problem description...',
+        constraints: '',
+        sample_input: '',
+        sample_output: '',
+        sort_order: prev.length,
+        testcases: [],
+      }];
+      return next;
+    });
+    setDirty(true);
   }
 
-  async function addNewTestcase(problemId) {
-    try {
-      await apiFetch(`/testcases/${problemId}`, {
-        method: 'POST',
-        body: JSON.stringify({ input: '', expected_output: '', is_sample: false, is_hidden: true }),
-      });
-      loadContest();
-    } catch (err) { alert(err.message); }
+  function updateProblemLocal(problemId, patch) {
+    setProblems(prev => prev.map(p => (p.id === problemId ? { ...p, ...patch } : p)));
+    setDirty(true);
   }
 
-  async function updateProblem(problemId, data) {
-    try { await apiFetch(`/problems/${problemId}`, { method: 'PUT', body: JSON.stringify(data) }); }
-    catch (err) { alert(err.message); }
-  }
-
-  async function updateTestcase(tcId, data) {
-    try { await apiFetch(`/testcases/${tcId}`, { method: 'PUT', body: JSON.stringify(data) }); loadContest(); }
-    catch (err) { alert(err.message); }
-  }
-
-  async function deleteTestcase(tcId) {
-    if (!confirm('Delete this testcase?')) return;
-    try { await apiFetch(`/testcases/${tcId}`, { method: 'DELETE' }); loadContest(); }
-    catch (err) { alert(err.message); }
-  }
-
-  async function deleteProblem(probId) {
+  function deleteProblemLocal(problemId) {
     if (!confirm('Delete this problem and all its testcases?')) return;
-    try { await apiFetch(`/problems/${probId}`, { method: 'DELETE' }); loadContest(); }
-    catch (err) { alert(err.message); }
+    setProblems(prev => prev.filter(p => p.id !== problemId));
+    setDirty(true);
   }
+
+  function addNewTestcase(problemId) {
+    const tmpId = `tmp-tc-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setProblems(prev => prev.map(p => {
+      if (p.id !== problemId) return p;
+      const tcs = Array.isArray(p.testcases) ? p.testcases : [];
+      return {
+        ...p,
+        testcases: [...tcs, {
+          id: tmpId,
+          input: '',
+          expected_output: '',
+          is_sample: false,
+          is_hidden: true,
+          sort_order: tcs.length,
+        }],
+      };
+    }));
+    setDirty(true);
+  }
+
+  function updateTestcaseLocal(problemId, tcId, patch) {
+    setProblems(prev => prev.map(p => {
+      if (p.id !== problemId) return p;
+      const tcs = Array.isArray(p.testcases) ? p.testcases : [];
+      return {
+        ...p,
+        testcases: tcs.map(tc => (tc.id === tcId ? { ...tc, ...patch } : tc)),
+      };
+    }));
+    setDirty(true);
+  }
+
+  function deleteTestcaseLocal(problemId, tcId) {
+    if (!confirm('Delete this testcase?')) return;
+    setProblems(prev => prev.map(p => {
+      if (p.id !== problemId) return p;
+      const tcs = Array.isArray(p.testcases) ? p.testcases : [];
+      return { ...p, testcases: tcs.filter(tc => tc.id !== tcId) };
+    }));
+    setDirty(true);
+  }
+
+  const globalSaveDisabled = useMemo(() => saving || !dirty, [saving, dirty]);
 
   if (loading) {
     return (
@@ -152,6 +187,23 @@ export default function AdminDashboard() {
 
   return (
     <div className="page-container max-w-6xl mx-auto">
+      {/* Sticky global save */}
+      <div className="sticky top-0 z-30 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-3 bg-white/80 backdrop-blur border-b border-gray-100">
+        <div className="max-w-6xl mx-auto flex items-center justify-between">
+          <div className="text-sm font-medium text-gray-600">
+            {dirty ? 'Unsaved changes' : 'All changes saved'}
+          </div>
+          <button
+            onClick={saveAllChanges}
+            disabled={globalSaveDisabled}
+            className="btn-primary text-sm flex items-center gap-1.5 disabled:opacity-40"
+          >
+            {saving ? <div className="spinner w-3 h-3" /> : <Save className="w-3.5 h-3.5" />}
+            Global Save Changes
+          </button>
+        </div>
+      </div>
+
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div className="flex items-center gap-4">
@@ -240,66 +292,32 @@ export default function AdminDashboard() {
                 <p className="text-xs text-gray-400">Edit times, description, and allowlist</p>
               </div>
             </div>
-            {editMode ? (
-              <div className="flex gap-2">
-                <button onClick={() => setEditMode(false)} className="btn-secondary text-sm">Cancel</button>
-                <button onClick={saveContestDetails} disabled={saving} className="btn-primary text-sm flex items-center gap-1.5">
-                  {saving ? <div className="spinner w-3 h-3" /> : <Save className="w-3.5 h-3.5" />} Save Changes
-                </button>
-              </div>
-            ) : (
-              <button onClick={() => setEditMode(true)} className="btn-secondary text-sm flex items-center gap-1.5">
-                <Edit3 className="w-3.5 h-3.5" /> Edit
-              </button>
-            )}
+            <div className="text-xs text-gray-400">Edits are saved via Global Save</div>
           </div>
 
-          {editMode ? (
-            <div className="space-y-5 bg-gray-50 rounded-xl p-6 border border-gray-100">
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Title</label>
-                <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} className="input-field" />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Description</label>
-                <textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className="input-field h-24 resize-none" />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Start Date & Time</label>
-                <input type="datetime-local" value={editStart} onChange={(e) => setEditStart(e.target.value)} className="input-field" />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1.5">End Date & Time</label>
-                <input type="datetime-local" value={editEnd} onChange={(e) => setEditEnd(e.target.value)} className="input-field" />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Allowlist (emails)</label>
-                <textarea value={editAllowlist} onChange={(e) => setEditAllowlist(e.target.value)} className="input-field h-28 resize-none font-mono text-xs" />
-              </div>
+          <div className="space-y-5 bg-gray-50 rounded-xl p-6 border border-gray-100">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1.5">Title</label>
+              <input value={editTitle} onChange={(e) => { setEditTitle(e.target.value); setDirty(true); }} className="input-field" />
             </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-6">
-              {[
-                { label: 'Title', value: contest.title },
-                { label: 'Status', value: status },
-                { label: 'Start', value: new Date(contest.start_time).toLocaleString() },
-                { label: 'End', value: new Date(contest.end_time).toLocaleString() },
-              ].map(({ label, value }) => (
-                <div key={label} className="bg-gray-50 rounded-xl p-4 border border-gray-100">
-                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">{label}</p>
-                  <p className="font-semibold text-gray-800">{value}</p>
-                </div>
-              ))}
-              <div className="col-span-2 bg-gray-50 rounded-xl p-4 border border-gray-100">
-                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Allowlisted Users</p>
-                <div className="flex flex-wrap gap-2">
-                  {(contest.allowlist || []).map((email, i) => (
-                    <span key={i} className="bg-white border border-gray-200 rounded-full px-3 py-1 text-xs font-mono text-gray-600">{email}</span>
-                  ))}
-                </div>
-              </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1.5">Description</label>
+              <textarea value={editDescription} onChange={(e) => { setEditDescription(e.target.value); setDirty(true); }} className="input-field h-24 resize-none" />
             </div>
-          )}
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1.5">Start Date & Time</label>
+              <input type="datetime-local" value={editStart} onChange={(e) => { setEditStart(e.target.value); setDirty(true); }} className="input-field" />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1.5">End Date & Time</label>
+              <input type="datetime-local" value={editEnd} onChange={(e) => { setEditEnd(e.target.value); setDirty(true); }} className="input-field" />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1.5">Allowlist (emails)</label>
+              <textarea value={editAllowlist} onChange={(e) => { setEditAllowlist(e.target.value); setDirty(true); }} className="input-field h-28 resize-none font-mono text-xs" />
+              <p className="text-xs text-emerald-600 mt-1 font-medium">Leave empty to make the contest public.</p>
+            </div>
+          </div>
         </div>
       )}
 
@@ -325,31 +343,38 @@ export default function AdminDashboard() {
                       {String.fromCharCode(65 + idx)}
                     </span>
                     <input
-                      defaultValue={prob.title}
-                      onBlur={(e) => updateProblem(prob.id, { title: e.target.value })}
+                      value={prob.title}
+                      onChange={(e) => updateProblemLocal(prob.id, { title: e.target.value })}
                       className="input-field py-1.5 text-lg font-bold w-72"
                     />
                   </div>
-                  <button onClick={() => deleteProblem(prob.id)} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors">
+                  <button onClick={() => deleteProblemLocal(prob.id)} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors">
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
 
                 <textarea
-                  defaultValue={prob.description}
-                  onBlur={(e) => updateProblem(prob.id, { description: e.target.value })}
+                  value={prob.description}
+                  onChange={(e) => updateProblemLocal(prob.id, { description: e.target.value })}
                   className="input-field h-24 resize-none text-sm"
                   placeholder="Problem description..."
+                />
+
+                <textarea
+                  value={prob.constraints || ''}
+                  onChange={(e) => updateProblemLocal(prob.id, { constraints: e.target.value })}
+                  className="input-field h-20 resize-none font-mono text-xs"
+                  placeholder="Constraints (shown under description)"
                 />
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Sample Input</label>
-                    <textarea defaultValue={prob.sample_input} onBlur={(e) => updateProblem(prob.id, { sample_input: e.target.value })} className="input-field h-16 resize-none font-mono text-xs mt-1" />
+                    <textarea value={prob.sample_input} onChange={(e) => updateProblemLocal(prob.id, { sample_input: e.target.value })} className="input-field h-16 resize-none font-mono text-xs mt-1" />
                   </div>
                   <div>
                     <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Sample Output</label>
-                    <textarea defaultValue={prob.sample_output} onBlur={(e) => updateProblem(prob.id, { sample_output: e.target.value })} className="input-field h-16 resize-none font-mono text-xs mt-1" />
+                    <textarea value={prob.sample_output} onChange={(e) => updateProblemLocal(prob.id, { sample_output: e.target.value })} className="input-field h-16 resize-none font-mono text-xs mt-1" />
                   </div>
                 </div>
 
@@ -368,25 +393,25 @@ export default function AdminDashboard() {
                         <span className="text-xs font-bold text-gray-400">#{tcIdx + 1}</span>
                         <div className="flex items-center gap-4">
                           <label className="flex items-center gap-1.5 cursor-pointer text-xs font-medium">
-                            <button onClick={() => updateTestcase(tc.id, { is_sample: !tc.is_sample })}>
+                            <button onClick={() => updateTestcaseLocal(prob.id, tc.id, { is_sample: !tc.is_sample })}>
                               {tc.is_sample ? <CheckSquare className="w-4 h-4 text-emerald-600" /> : <Square className="w-4 h-4 text-gray-300" />}
                             </button>
                             <span className={tc.is_sample ? 'text-emerald-700' : 'text-gray-400'}>Sample</span>
                           </label>
                           <label className="flex items-center gap-1.5 cursor-pointer text-xs font-medium">
-                            <button onClick={() => updateTestcase(tc.id, { is_hidden: !tc.is_hidden })}>
+                            <button onClick={() => updateTestcaseLocal(prob.id, tc.id, { is_hidden: !tc.is_hidden })}>
                               {tc.is_hidden ? <CheckSquare className="w-4 h-4 text-orange-500" /> : <Square className="w-4 h-4 text-gray-300" />}
                             </button>
                             <span className={tc.is_hidden ? 'text-orange-700' : 'text-gray-400'}>Hidden</span>
                           </label>
-                          <button onClick={() => deleteTestcase(tc.id)} className="text-red-300 hover:text-red-600 transition-colors">
+                          <button onClick={() => deleteTestcaseLocal(prob.id, tc.id)} className="text-red-300 hover:text-red-600 transition-colors">
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-3">
-                        <textarea defaultValue={tc.input} onBlur={(e) => updateTestcase(tc.id, { input: e.target.value })} className="input-field h-16 resize-none font-mono text-xs" placeholder="Input" />
-                        <textarea defaultValue={tc.expected_output} onBlur={(e) => updateTestcase(tc.id, { expected_output: e.target.value })} className="input-field h-16 resize-none font-mono text-xs" placeholder="Expected Output" />
+                        <textarea value={tc.input} onChange={(e) => updateTestcaseLocal(prob.id, tc.id, { input: e.target.value })} className="input-field h-16 resize-none font-mono text-xs" placeholder="Input" />
+                        <textarea value={tc.expected_output} onChange={(e) => updateTestcaseLocal(prob.id, tc.id, { expected_output: e.target.value })} className="input-field h-16 resize-none font-mono text-xs" placeholder="Expected Output" />
                       </div>
                     </div>
                   ))}

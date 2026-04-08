@@ -30,6 +30,7 @@ export default function CreateContest() {
       id: Date.now(),
       title: '',
       description: '',
+      constraints: '',
       sample_input: '',
       sample_output: '',
       testcases: [],
@@ -125,6 +126,7 @@ export default function CreateContest() {
           body: JSON.stringify({
             title: prob.title,
             description: prob.description,
+            constraints: prob.constraints,
             sample_input: prob.sample_input,
             sample_output: prob.sample_output,
             sort_order: i,
@@ -276,6 +278,7 @@ export default function CreateContest() {
               placeholder="Enter emails (one per line, comma, or semicolon separated)&#10;user1@example.com&#10;user2@example.com"
             />
             <p className="text-xs text-gray-400 mt-1">Only these users can see and join the contest. Your email is automatically included.</p>
+            <p className="text-xs text-emerald-600 mt-1 font-medium">Leave empty to make the contest public.</p>
           </div>
 
           <div className="flex justify-end">
@@ -357,6 +360,16 @@ export default function CreateContest() {
                       className="input-field h-32 resize-none"
                       placeholder="Describe the problem statement..."
                     />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">Constraints</label>
+                    <textarea
+                      value={prob.constraints}
+                      onChange={(e) => updateProblem(idx, 'constraints', e.target.value)}
+                      className="input-field h-24 resize-none font-mono text-xs"
+                      placeholder="e.g., 1 ≤ N ≤ 2e5\n1 ≤ Ai ≤ 1e9"
+                    />
+                    <p className="text-xs text-gray-400 mt-1">Shown under the problem description.</p>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>

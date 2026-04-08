@@ -19,9 +19,13 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'End time must be after start time' });
     }
 
-    // Normalize allowlist emails to lowercase, always include the creator
-    let emails = Array.isArray(allowlist) ? allowlist.map(e => e.toLowerCase().trim()).filter(Boolean) : [];
-    if (!emails.includes(req.user.email.toLowerCase())) {
+    // Public vs private:
+    // - If allowlist is empty -> public contest (no restrictions)
+    // - If allowlist has entries -> private contest (creator always included)
+    let emails = Array.isArray(allowlist)
+      ? allowlist.map(e => String(e).toLowerCase().trim()).filter(Boolean)
+      : [];
+    if (emails.length > 0 && !emails.includes(req.user.email.toLowerCase())) {
       emails.push(req.user.email.toLowerCase());
     }
 
@@ -47,7 +51,9 @@ router.get('/', authMiddleware, async (req, res) => {
               (SELECT COUNT(*) FROM problems WHERE contest_id = c.id) as problem_count
        FROM contests c
        JOIN users u ON c.creator_id = u.id
-       WHERE c.creator_id = $1 OR $2 = ANY(c.allowlist)
+       WHERE c.creator_id = $1
+          OR COALESCE(array_length(c.allowlist, 1), 0) = 0
+          OR $2 = ANY(c.allowlist)
        ORDER BY c.start_time DESC`,
       [req.user.id, req.user.email.toLowerCase()]
     );
@@ -80,13 +86,14 @@ router.get('/:id', authMiddleware, async (req, res) => {
 
     // Check access: creator or in allowlist
     const userEmail = req.user.email.toLowerCase();
-    if (contest.creator_id !== req.user.id && !contest.allowlist.includes(userEmail)) {
+    const isPublic = !contest.allowlist || contest.allowlist.length === 0;
+    if (!isPublic && contest.creator_id !== req.user.id && !contest.allowlist.includes(userEmail)) {
       return res.status(403).json({ error: 'You are not allowed to view this contest' });
     }
 
     // Get problems
     const problemsResult = await query(
-      `SELECT id, contest_id, title, description, sample_input, sample_output, sort_order
+      `SELECT id, contest_id, title, description, constraints, sample_input, sample_output, sort_order
        FROM problems WHERE contest_id = $1 ORDER BY sort_order ASC, created_at ASC`,
       [id]
     );
@@ -133,7 +140,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
 router.put('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description, start_time, end_time, allowlist } = req.body;
+    const { title, description, start_time, end_time, allowlist, problems } = req.body;
 
     // Verify ownership
     const existing = await query('SELECT creator_id FROM contests WHERE id = $1', [id]);
@@ -144,6 +151,146 @@ router.put('/:id', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Only the contest creator can edit this contest' });
     }
 
+    // If problems payload exists, treat as Global Save Changes (single transactional update).
+    if (Array.isArray(problems)) {
+      await query('BEGIN');
+
+      const contestFields = [];
+      const contestValues = [];
+      let idx = 1;
+
+      if (title !== undefined) { contestFields.push(`title = $${idx++}`); contestValues.push(title); }
+      if (description !== undefined) { contestFields.push(`description = $${idx++}`); contestValues.push(description); }
+      if (start_time !== undefined) { contestFields.push(`start_time = $${idx++}`); contestValues.push(new Date(start_time)); }
+      if (end_time !== undefined) { contestFields.push(`end_time = $${idx++}`); contestValues.push(new Date(end_time)); }
+      if (allowlist !== undefined) {
+        let emails = Array.isArray(allowlist)
+          ? allowlist.map(e => String(e).toLowerCase().trim()).filter(Boolean)
+          : [];
+        // Only enforce creator inclusion when private
+        if (emails.length > 0 && !emails.includes(req.user.email.toLowerCase())) {
+          emails.push(req.user.email.toLowerCase());
+        }
+        contestFields.push(`allowlist = $${idx++}`);
+        contestValues.push(emails);
+      }
+
+      if (contestFields.length > 0) {
+        contestValues.push(id);
+        await query(
+          `UPDATE contests SET ${contestFields.join(', ')} WHERE id = $${idx}`,
+          contestValues
+        );
+      }
+
+      // Problems snapshot apply: upsert + delete removed
+      const existingProblems = await query('SELECT id FROM problems WHERE contest_id = $1', [id]);
+      const existingProblemIds = new Set(existingProblems.rows.map(r => r.id));
+      const incomingProblemIds = new Set(problems.filter(p => p && p.id).map(p => p.id));
+
+      // Delete problems removed from payload
+      for (const existingId of existingProblemIds) {
+        if (!incomingProblemIds.has(existingId)) {
+          await query('DELETE FROM problems WHERE id = $1 AND contest_id = $2', [existingId, id]);
+        }
+      }
+
+      // Upsert problems and their testcases
+      for (let i = 0; i < problems.length; i++) {
+        const p = problems[i] || {};
+        const pid = p.id || null;
+
+        let problemId = pid;
+        if (problemId && existingProblemIds.has(problemId)) {
+          await query(
+            `UPDATE problems
+             SET title = $1, description = $2, constraints = $3,
+                 sample_input = $4, sample_output = $5, sort_order = $6
+             WHERE id = $7 AND contest_id = $8`,
+            [
+              p.title || '',
+              p.description || '',
+              p.constraints || '',
+              p.sample_input || '',
+              p.sample_output || '',
+              p.sort_order ?? i,
+              problemId,
+              id,
+            ]
+          );
+        } else {
+          const inserted = await query(
+            `INSERT INTO problems (contest_id, title, description, constraints, sample_input, sample_output, sort_order)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING id`,
+            [
+              id,
+              p.title || '',
+              p.description || '',
+              p.constraints || '',
+              p.sample_input || '',
+              p.sample_output || '',
+              p.sort_order ?? i,
+            ]
+          );
+          problemId = inserted.rows[0].id;
+        }
+
+        const tcs = Array.isArray(p.testcases) ? p.testcases : [];
+        const existingTcs = await query('SELECT id FROM testcases WHERE problem_id = $1', [problemId]);
+        const existingTcIds = new Set(existingTcs.rows.map(r => r.id));
+        const incomingTcIds = new Set(tcs.filter(tc => tc && tc.id).map(tc => tc.id));
+
+        // Delete removed testcases
+        for (const existingTcId of existingTcIds) {
+          if (!incomingTcIds.has(existingTcId)) {
+            await query('DELETE FROM testcases WHERE id = $1 AND problem_id = $2', [existingTcId, problemId]);
+          }
+        }
+
+        for (let j = 0; j < tcs.length; j++) {
+          const tc = tcs[j] || {};
+          if (tc.id && existingTcIds.has(tc.id)) {
+            await query(
+              `UPDATE testcases
+               SET input = $1, expected_output = $2, is_sample = $3, is_hidden = $4, sort_order = $5
+               WHERE id = $6 AND problem_id = $7`,
+              [
+                tc.input ?? '',
+                tc.expected_output ?? '',
+                tc.is_sample === true,
+                tc.is_hidden !== false,
+                tc.sort_order ?? j,
+                tc.id,
+                problemId,
+              ]
+            );
+          } else {
+            await query(
+              `INSERT INTO testcases (problem_id, input, expected_output, is_sample, is_hidden, sort_order)
+               VALUES ($1, $2, $3, $4, $5, $6)`,
+              [
+                problemId,
+                tc.input ?? '',
+                tc.expected_output ?? '',
+                tc.is_sample === true,
+                tc.is_hidden !== false,
+                tc.sort_order ?? j,
+              ]
+            );
+          }
+        }
+      }
+
+      await query('COMMIT');
+
+      // Return updated contest
+      const updated = await query('SELECT * FROM contests WHERE id = $1', [id]);
+      res.json({ contest: updated.rows[0] });
+      return;
+    }
+
+    // Backwards-compatible partial update
     const fields = [];
     const values = [];
     let idx = 1;
@@ -152,9 +299,11 @@ router.put('/:id', authMiddleware, async (req, res) => {
     if (description !== undefined) { fields.push(`description = $${idx++}`); values.push(description); }
     if (start_time) { fields.push(`start_time = $${idx++}`); values.push(new Date(start_time)); }
     if (end_time) { fields.push(`end_time = $${idx++}`); values.push(new Date(end_time)); }
-    if (allowlist) {
-      let emails = allowlist.map(e => e.toLowerCase().trim()).filter(Boolean);
-      if (!emails.includes(req.user.email.toLowerCase())) {
+    if (allowlist !== undefined) {
+      let emails = Array.isArray(allowlist)
+        ? allowlist.map(e => String(e).toLowerCase().trim()).filter(Boolean)
+        : [];
+      if (emails.length > 0 && !emails.includes(req.user.email.toLowerCase())) {
         emails.push(req.user.email.toLowerCase());
       }
       fields.push(`allowlist = $${idx++}`);
@@ -173,6 +322,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
 
     res.json({ contest: result.rows[0] });
   } catch (err) {
+    try { await query('ROLLBACK'); } catch (e) {}
     console.error('Update contest error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }

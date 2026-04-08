@@ -1,17 +1,18 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import CodeEditor, { BOILERPLATES } from '../components/CodeEditor';
 import Leaderboard from '../components/Leaderboard';
 import Timer from '../components/Timer';
 import ConfettiAnimation from '../components/ConfettiAnimation';
 import SubmissionHistory from '../components/SubmissionHistory';
-import { createSocket, pollSubmissionResult } from '../utils/socket';
+import { createSocket, pollRunResult, pollSubmissionResult } from '../utils/socket';
 import {
   ArrowLeft, Play, Send, Plus, CheckCircle, Clock,
   Code2, Trophy, X, Settings, Terminal, History, Loader,
   ChevronRight, Sparkles, Zap, AlertCircle
 } from 'lucide-react';
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 
 const STORAGE_KEY = (contestId, problemId) => `codex_code_${contestId}_${problemId}`;
 const LANG_KEY = (contestId, problemId) => `codex_lang_${contestId}_${problemId}`;
@@ -20,6 +21,13 @@ export default function ContestWorkspace() {
   const { id: contestId } = useParams();
   const { apiFetch, user, token } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const qs = new URLSearchParams(location.search);
+  const isVirtual = qs.get('virtual') === '1';
+  const initialView = qs.get('view') === 'leaderboard' ? 'leaderboard' : 'problem';
+
+  const VIRTUAL_KEY = `codex_virtual_${contestId}`;
 
   const [contest, setContest] = useState(null);
   const [problems, setProblems] = useState([]);
@@ -42,9 +50,11 @@ export default function ContestWorkspace() {
   const [showConfetti, setShowConfetti] = useState(false);
   const confettiKey = useRef(0);
   const cancelPollRef = useRef(null);
+  const lastRunIdRef = useRef(null);
+  const lastSubmissionIdRef = useRef(null);
 
   // View state
-  const [leftView, setLeftView] = useState('problem'); // problem, leaderboard
+  const [leftView, setLeftView] = useState(initialView); // problem, leaderboard
   const [bottomTab, setBottomTab] = useState('output');
 
   // Leaderboard
@@ -56,8 +66,62 @@ export default function ContestWorkspace() {
   // Contest status
   const [contestStatus, setContestStatus] = useState('loading');
 
+  // Virtual session + local scoreboard
+  const [virtualSession, setVirtualSession] = useState(null); // { startMs, durationMs }
+  const [virtualProblems, setVirtualProblems] = useState({}); // pid -> data
+
   // Socket ref
   const socketRef = useRef(null);
+
+  // Virtual: time-travel standings from backend + local injection
+  useEffect(() => {
+    if (!isVirtual || !virtualSession || leftView !== 'leaderboard') return;
+
+    let stopped = false;
+    async function refresh() {
+      const elapsedMs = Date.now() - virtualSession.startMs;
+      try {
+        const data = await apiFetch(`/leaderboard/${contestId}?relative_timestamp=${elapsedMs}`);
+        if (stopped) return;
+        const base = data.leaderboard || [];
+
+        // Inject virtual user row locally (do not persist into official standings)
+        let solved = 0;
+        let penalty = 0;
+        const vp = virtualProblems || {};
+        for (const pid of Object.keys(vp)) {
+          if (vp[pid]?.accepted) {
+            solved += 1;
+            penalty += vp[pid].penalty || 0;
+          }
+        }
+        const virtualEntry = {
+          rank: null,
+          user_id: `virtual:${user?.id || 'anon'}:${contestId}`,
+          username: `${user?.username || 'You'} (Virtual)`,
+          solved,
+          penalty,
+          problems: vp,
+        };
+
+        const merged = [...base, virtualEntry].sort((a, b) => {
+          // same score ordering as backend: (solved*1e7 - penalty) desc
+          const sa = (a.solved || 0) * 10000000 - (a.penalty || 0);
+          const sb = (b.solved || 0) * 10000000 - (b.penalty || 0);
+          if (sb !== sa) return sb - sa;
+          return String(a.username).localeCompare(String(b.username));
+        }).map((e, idx) => ({ ...e, rank: idx + 1 }));
+
+        setLeaderboard(merged);
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    refresh();
+    const interval = setInterval(refresh, 10000);
+    return () => { stopped = true; clearInterval(interval); };
+  }, [isVirtual, virtualSession, leftView, contestId, apiFetch, virtualProblems, user]);
 
   // Load contest
   const loadContest = useCallback(async () => {
@@ -66,7 +130,7 @@ export default function ContestWorkspace() {
       setContest(data.contest);
       setProblems(data.contest.problems || []);
       setIsCreator(data.isCreator);
-      setAcceptedProblems(data.acceptedProblems || []);
+      setAcceptedProblems(isVirtual ? [] : (data.acceptedProblems || []));
 
       if (data.contest.problems?.length > 0 && !selectedProblem) {
         const firstProb = data.contest.problems[0];
@@ -81,22 +145,25 @@ export default function ContestWorkspace() {
       const now = new Date();
       const start = new Date(data.contest.start_time);
       const end = new Date(data.contest.end_time);
-      if (now < start) setContestStatus('upcoming');
-      else if (now <= end) setContestStatus('live');
-      else setContestStatus('ended');
+      if (!isVirtual) {
+        if (now < start) setContestStatus('upcoming');
+        else if (now <= end) setContestStatus('live');
+        else setContestStatus('ended');
+      }
     } catch (err) {
       console.error(err);
       navigate('/');
     } finally {
       setLoading(false);
     }
-  }, [contestId, apiFetch, navigate, selectedProblem]);
+  }, [contestId, apiFetch, navigate, selectedProblem, isVirtual]);
 
   useEffect(() => { loadContest(); }, []);
 
   // Update contest status periodically
   useEffect(() => {
     if (!contest) return;
+    if (isVirtual) return;
     const interval = setInterval(() => {
       const now = new Date();
       const start = new Date(contest.start_time);
@@ -106,7 +173,29 @@ export default function ContestWorkspace() {
       else setContestStatus('ended');
     }, 1000);
     return () => clearInterval(interval);
-  }, [contest]);
+  }, [contest, isVirtual]);
+
+  // Load or initialize virtual session
+  useEffect(() => {
+    if (!isVirtual || !contest) return;
+    const raw = localStorage.getItem(VIRTUAL_KEY);
+    let sess = null;
+    try { sess = raw ? JSON.parse(raw) : null; } catch (e) { sess = null; }
+    if (!sess || !sess.startMs || !sess.durationMs) {
+      // Create one if missing (fallback)
+      const startMs = Date.now();
+      const durationMs = Math.max(1, new Date(contest.end_time) - new Date(contest.start_time));
+      sess = { startMs, durationMs };
+      localStorage.setItem(VIRTUAL_KEY, JSON.stringify(sess));
+    }
+    setVirtualSession(sess);
+
+    const vProbRaw = localStorage.getItem(`${VIRTUAL_KEY}_score`);
+    let vProb = {};
+    try { vProb = vProbRaw ? JSON.parse(vProbRaw) : {}; } catch (e) { vProb = {}; }
+    setVirtualProblems(vProb || {});
+    setContestStatus(Date.now() <= (sess.startMs + sess.durationMs) ? 'live' : 'ended');
+  }, [isVirtual, contestId, contest]);
 
   // Socket.io for real-time updates
   useEffect(() => {
@@ -137,17 +226,28 @@ export default function ContestWorkspace() {
     });
 
     // Load initial leaderboard
-    apiFetch(`/leaderboard/${contestId}`)
-      .then(data => setLeaderboard(data.leaderboard || []))
-      .catch(console.error);
+    if (!isVirtual) {
+      apiFetch(`/leaderboard/${contestId}`)
+        .then(data => setLeaderboard(data.leaderboard || []))
+        .catch(console.error);
+    }
 
     return () => {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [contestId, token, user]);
+  }, [contestId, token, user, isVirtual]);
 
   function handleSubmissionResult(data) {
+    // Ignore runs/submissions that are not the most recent request (best-effort)
+    if (data.is_run) {
+      if (!lastRunIdRef.current || data.run_id !== lastRunIdRef.current) return;
+    } else {
+      if (lastSubmissionIdRef.current && data.submission_id && data.submission_id !== lastSubmissionIdRef.current) {
+        // still allow (e.g. websocket order), but prefer latest; don't hard-drop
+      }
+    }
+
     // Cancel any active poll
     if (cancelPollRef.current) {
       cancelPollRef.current();
@@ -165,9 +265,28 @@ export default function ContestWorkspace() {
     setSubmitting(false);
     setRunning(false);
 
+    if (!data.is_run && isVirtual && virtualSession && data.problem_id) {
+      const elapsedMin = Math.floor((Date.now() - virtualSession.startMs) / 60000);
+      const pid = data.problem_id;
+      setVirtualProblems(prev => {
+        const next = { ...(prev || {}) };
+        if (!next[pid]) next[pid] = { attempts: 0, accepted: false, accept_time: null, penalty: 0 };
+        const p = { ...next[pid] };
+        p.attempts += 1;
+        if (!p.accepted && data.verdict === 'Accepted') {
+          p.accepted = true;
+          p.accept_time = elapsedMin;
+          p.penalty = elapsedMin + 10 * (p.attempts - 1);
+        }
+        next[pid] = p;
+        localStorage.setItem(`${VIRTUAL_KEY}_score`, JSON.stringify(next));
+        return next;
+      });
+    }
+
     if (data.verdict === 'Accepted') {
       const pid = data.problem_id || selectedProblem?.id;
-      if (pid && !acceptedProblems.includes(pid)) {
+      if (!isVirtual && pid && !acceptedProblems.includes(pid)) {
         setAcceptedProblems(prev => [...prev, pid]);
       }
       confettiKey.current++;
@@ -223,11 +342,9 @@ export default function ContestWorkspace() {
           custom_input: showCustomInput ? customInput : null,
         }),
       });
-
-      // Start polling as fallback (WebSocket may also deliver the result)
-      cancelPollRef.current = pollSubmissionResult(
-        apiFetch, res.submission.id, handleSubmissionResult
-      );
+      lastRunIdRef.current = res.run_id;
+      // Poll fallback (websocket is best-effort in some environments)
+      cancelPollRef.current = pollRunResult(apiFetch, res.run_id, handleSubmissionResult);
     } catch (err) {
       setResult({ verdict: 'Error', stderr: err.message });
       setRunning(false);
@@ -235,7 +352,7 @@ export default function ContestWorkspace() {
   }
 
   async function handleSubmit() {
-    if (contestStatus !== 'live') return;
+    if (contestStatus !== 'live' && contestStatus !== 'ended') return;
     setSubmitting(true);
     setResult(null);
     setBottomTab('output');
@@ -248,8 +365,10 @@ export default function ContestWorkspace() {
           contest_id: contestId,
           language,
           code,
+          ...(isVirtual ? { submission_type: 'VIRTUAL' } : {}),
         }),
       });
+      lastSubmissionIdRef.current = res.submission.id;
 
       // Start polling as fallback
       cancelPollRef.current = pollSubmissionResult(
@@ -287,7 +406,7 @@ export default function ContestWorkspace() {
   }
 
   // Upcoming contest — show countdown
-  if (contestStatus === 'upcoming') {
+  if (contestStatus === 'upcoming' && !isVirtual) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-emerald-950 to-slate-900 flex items-center justify-center">
         <div className="text-center">
@@ -339,8 +458,10 @@ export default function ContestWorkspace() {
         </div>
 
         <div className="flex items-center gap-3">
-          {contestStatus === 'live' && contest?.end_time && (
-            <Timer targetTime={contest.end_time} label="Remaining" />
+          {contestStatus === 'live' && (
+            isVirtual && virtualSession
+              ? <Timer targetTime={new Date(virtualSession.startMs + virtualSession.durationMs).toISOString()} label="Virtual Remaining" />
+              : (contest?.end_time ? <Timer targetTime={contest.end_time} label="Remaining" /> : null)
           )}
           {isCreator && (
             <Link to={`/contests/${contestId}/admin`} className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs font-medium text-gray-600 transition-colors">
@@ -351,10 +472,10 @@ export default function ContestWorkspace() {
       </div>
 
       {/* ══════════ Main Split Layout ══════════ */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 overflow-hidden">
+        <PanelGroup direction="horizontal" className="h-full w-full">
 
-        {/* ────── Left Panel: Problem Description / Leaderboard ────── */}
-        <div className="w-[44%] flex flex-col bg-white border-r border-gray-200">
+        <Panel defaultSize={44} minSize={28} className="flex flex-col bg-white border-r border-gray-200">
           {/* Problem tabs */}
           <div className="flex items-center gap-1 px-3 py-2 border-b border-gray-100 overflow-x-auto shrink-0 bg-gradient-to-r from-gray-50 to-white">
             {problems.map((prob, idx) => {
@@ -427,6 +548,17 @@ export default function ContestWorkspace() {
                   {selectedProblem.description}
                 </div>
 
+                {/* Constraints */}
+                {selectedProblem.constraints && (
+                  <div className="mb-8">
+                    <h4 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                      <ChevronRight className="w-3 h-3" /> Constraints
+                    </h4>
+                    <pre className="bg-gradient-to-r from-slate-50 to-gray-50 border border-gray-200 rounded-xl p-4 text-xs font-mono text-gray-800 overflow-x-auto shadow-inner whitespace-pre-wrap">
+{selectedProblem.constraints}</pre>
+                  </div>
+                )}
+
                 {/* Sample I/O */}
                 <div className="space-y-4">
                   {selectedProblem.sample_input && (
@@ -479,10 +611,12 @@ export default function ContestWorkspace() {
               </div>
             )}
           </div>
-        </div>
+        </Panel>
+
+        <PanelResizeHandle className="w-1 bg-gray-100 hover:bg-emerald-200 transition-colors cursor-col-resize" />
 
         {/* ────── Right Panel: Editor & Output ────── */}
-        <div className="w-[56%] flex flex-col bg-white">
+        <Panel defaultSize={56} minSize={32} className="flex flex-col bg-white">
           {/* Toolbar */}
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white shrink-0">
             <div className="flex items-center gap-3">
@@ -523,7 +657,7 @@ export default function ContestWorkspace() {
               </button>
               <button
                 onClick={handleSubmit}
-                disabled={submitting || contestStatus !== 'live' || !selectedProblem}
+                disabled={submitting || (contestStatus !== 'live' && contestStatus !== 'ended') || !selectedProblem}
                 className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-xs font-semibold bg-gradient-to-r from-emerald-500 to-green-600 text-white hover:from-emerald-600 hover:to-green-700 disabled:opacity-40 disabled:hover:from-emerald-500 transition-all shadow-md shadow-emerald-200 hover:shadow-lg hover:shadow-emerald-300"
                 id="submit-btn"
               >
@@ -534,12 +668,12 @@ export default function ContestWorkspace() {
           </div>
 
           {/* Code editor area */}
-          <div className="flex-1 min-h-0">
-            <CodeEditor language={language} code={code} onChange={setCode} />
-          </div>
-
-          {/* ────── Bottom Panel: Output / Custom Input ────── */}
-          <div className="h-52 border-t-2 border-gray-200 flex flex-col shrink-0 bg-white">
+          <PanelGroup direction="vertical" className="flex-1 min-h-0">
+            <Panel defaultSize={70} minSize={30} className="min-h-0">
+              <CodeEditor language={language} code={code} onChange={setCode} />
+            </Panel>
+            <PanelResizeHandle className="h-1 bg-gray-100 hover:bg-emerald-200 transition-colors cursor-row-resize" />
+            <Panel defaultSize={30} minSize={18} className="border-t-2 border-gray-200 flex flex-col bg-white min-h-0">
             <div className="flex items-center gap-1 px-3 py-1.5 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white shrink-0">
               <button
                 onClick={() => { setBottomTab('output'); setShowCustomInput(false); }}
@@ -632,8 +766,10 @@ export default function ContestWorkspace() {
                 </div>
               )}
             </div>
-          </div>
-        </div>
+            </Panel>
+          </PanelGroup>
+        </Panel>
+        </PanelGroup>
       </div>
 
       {/* Submission History Modal */}
@@ -645,3 +781,4 @@ export default function ContestWorkspace() {
     </div>
   );
 }
+
