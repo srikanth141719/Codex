@@ -58,7 +58,28 @@ router.get('/', authMiddleware, async (req, res) => {
       [req.user.id, req.user.email.toLowerCase()]
     );
 
-    res.json({ contests: result.rows });
+    const contests = result.rows;
+    const now = new Date();
+    const live = [];
+    const upcoming = [];
+    const past = [];
+
+    for (const c of contests) {
+      const start = new Date(c.start_time);
+      const end = new Date(c.end_time);
+      if (now >= start && now <= end) {
+        live.push(c);
+      } else if (now < start) {
+        upcoming.push(c);
+      } else {
+        past.push(c);
+      }
+    }
+
+    res.json({
+      contests,
+      groups: { live, upcoming, past },
+    });
   } catch (err) {
     console.error('List contests error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -93,13 +114,16 @@ router.get('/:id', authMiddleware, async (req, res) => {
 
     // Get problems
     const problemsResult = await query(
-      `SELECT id, contest_id, title, description, constraints, sample_input, sample_output, sort_order
+      `SELECT id, contest_id, title, description, constraints, sample_input, sample_output,
+              difficulty, solution, sort_order
        FROM problems WHERE contest_id = $1 ORDER BY sort_order ASC, created_at ASC`,
       [id]
     );
 
     // Get sample testcases for each problem (non-hidden ones for regular users)
     const isCreator = contest.creator_id === req.user.id;
+    const now = new Date();
+    const contestEnded = now > new Date(contest.end_time);
     const problems = [];
     for (const prob of problemsResult.rows) {
       let tcQuery;
@@ -114,7 +138,12 @@ router.get('/:id', authMiddleware, async (req, res) => {
           [prob.id]
         );
       }
-      problems.push({ ...prob, testcases: tcQuery.rows });
+      let safeProb = { ...prob, testcases: tcQuery.rows };
+      // Strip solution field for non-creators while contest is live/upcoming
+      if (!isCreator && !contestEnded) {
+        delete safeProb.solution;
+      }
+      problems.push(safeProb);
     }
 
     // Check if user has accepted submissions
@@ -205,14 +234,18 @@ router.put('/:id', authMiddleware, async (req, res) => {
           await query(
             `UPDATE problems
              SET title = $1, description = $2, constraints = $3,
-                 sample_input = $4, sample_output = $5, sort_order = $6
-             WHERE id = $7 AND contest_id = $8`,
+                 sample_input = $4, sample_output = $5,
+                 difficulty = $6, solution = $7,
+                 sort_order = $8
+             WHERE id = $9 AND contest_id = $10`,
             [
               p.title || '',
               p.description || '',
               p.constraints || '',
               p.sample_input || '',
               p.sample_output || '',
+              p.difficulty || 'Easy',
+              p.solution || null,
               p.sort_order ?? i,
               problemId,
               id,
@@ -220,8 +253,8 @@ router.put('/:id', authMiddleware, async (req, res) => {
           );
         } else {
           const inserted = await query(
-            `INSERT INTO problems (contest_id, title, description, constraints, sample_input, sample_output, sort_order)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
+            `INSERT INTO problems (contest_id, title, description, constraints, sample_input, sample_output, difficulty, solution, sort_order)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              RETURNING id`,
             [
               id,
@@ -230,6 +263,8 @@ router.put('/:id', authMiddleware, async (req, res) => {
               p.constraints || '',
               p.sample_input || '',
               p.sample_output || '',
+              p.difficulty || 'Easy',
+              p.solution || null,
               p.sort_order ?? i,
             ]
           );

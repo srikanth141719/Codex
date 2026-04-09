@@ -14,8 +14,10 @@ import {
 } from 'lucide-react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 
-const STORAGE_KEY = (contestId, problemId) => `codex_code_${contestId}_${problemId}`;
-const LANG_KEY = (contestId, problemId) => `codex_lang_${contestId}_${problemId}`;
+const STORAGE_KEY = (contestId, problemId, isVirtual) =>
+  `codex_code_${isVirtual ? 'virtual' : 'real'}_${contestId}_${problemId}`;
+const LANG_KEY = (contestId, problemId, isVirtual) =>
+  `codex_lang_${isVirtual ? 'virtual' : 'real'}_${contestId}_${problemId}`;
 
 export default function ContestWorkspace() {
   const { id: contestId } = useParams();
@@ -24,10 +26,11 @@ export default function ContestWorkspace() {
   const location = useLocation();
 
   const qs = new URLSearchParams(location.search);
-  const isVirtual = qs.get('virtual') === '1';
+  let isVirtual = qs.get('virtual') === '1';
   const initialView = qs.get('view') === 'leaderboard' ? 'leaderboard' : 'problem';
 
   const VIRTUAL_KEY = `codex_virtual_${contestId}`;
+  const ACTIVE_VIRTUAL_KEY = 'codex_active_virtual_contest';
 
   const [contest, setContest] = useState(null);
   const [problems, setProblems] = useState([]);
@@ -123,6 +126,21 @@ export default function ContestWorkspace() {
     return () => { stopped = true; clearInterval(interval); };
   }, [isVirtual, virtualSession, leftView, contestId, apiFetch, virtualProblems, user]);
 
+  // Auto-redirect into virtual mode if there is an active virtual contest session
+  useEffect(() => {
+    if (isVirtual) return;
+    const raw = localStorage.getItem(ACTIVE_VIRTUAL_KEY);
+    if (!raw) return;
+    try {
+      const active = JSON.parse(raw);
+      if (active && active.contest_id === contestId) {
+        navigate(`/contests/${contestId}?virtual=1${location.search.includes('view=leaderboard') ? '&view=leaderboard' : ''}`, { replace: true });
+      }
+    } catch (e) {
+      // ignore malformed
+    }
+  }, [contestId, isVirtual, navigate, location.search]);
+
   // Load contest
   const loadContest = useCallback(async () => {
     try {
@@ -136,8 +154,8 @@ export default function ContestWorkspace() {
         const firstProb = data.contest.problems[0];
         setSelectedProblem(firstProb);
         setSelectedIdx(0);
-        const savedCode = localStorage.getItem(STORAGE_KEY(contestId, firstProb.id));
-        const savedLang = localStorage.getItem(LANG_KEY(contestId, firstProb.id));
+        const savedCode = localStorage.getItem(STORAGE_KEY(contestId, firstProb.id, isVirtual));
+        const savedLang = localStorage.getItem(LANG_KEY(contestId, firstProb.id, isVirtual));
         if (savedLang) setLanguage(savedLang);
         setCode(savedCode || BOILERPLATES[savedLang || 'cpp'] || '');
       }
@@ -194,7 +212,32 @@ export default function ContestWorkspace() {
     let vProb = {};
     try { vProb = vProbRaw ? JSON.parse(vProbRaw) : {}; } catch (e) { vProb = {}; }
     setVirtualProblems(vProb || {});
-    setContestStatus(Date.now() <= (sess.startMs + sess.durationMs) ? 'live' : 'ended');
+    const active = Date.now() <= (sess.startMs + sess.durationMs);
+    setContestStatus(active ? 'live' : 'ended');
+
+    // Persist active virtual contest for cross-page navigation
+    if (active) {
+      localStorage.setItem(
+        ACTIVE_VIRTUAL_KEY,
+        JSON.stringify({
+          contest_id: contestId,
+          virtual_start_time: sess.startMs,
+          virtual_duration_ms: sess.durationMs,
+        })
+      );
+    } else {
+      const rawActive = localStorage.getItem(ACTIVE_VIRTUAL_KEY);
+      if (rawActive) {
+        try {
+          const parsed = JSON.parse(rawActive);
+          if (parsed && parsed.contest_id === contestId) {
+            localStorage.removeItem(ACTIVE_VIRTUAL_KEY);
+          }
+        } catch (e) {
+          localStorage.removeItem(ACTIVE_VIRTUAL_KEY);
+        }
+      }
+    }
   }, [isVirtual, contestId, contest]);
 
   // Socket.io for real-time updates
@@ -298,20 +341,20 @@ export default function ContestWorkspace() {
   // Auto-save code to localStorage
   useEffect(() => {
     if (!selectedProblem) return;
-    localStorage.setItem(STORAGE_KEY(contestId, selectedProblem.id), code);
-    localStorage.setItem(LANG_KEY(contestId, selectedProblem.id), language);
-  }, [code, language, contestId, selectedProblem]);
+    localStorage.setItem(STORAGE_KEY(contestId, selectedProblem.id, isVirtual), code);
+    localStorage.setItem(LANG_KEY(contestId, selectedProblem.id, isVirtual), language);
+  }, [code, language, contestId, selectedProblem, isVirtual]);
 
   function selectProblem(prob, idx) {
     if (selectedProblem) {
-      localStorage.setItem(STORAGE_KEY(contestId, selectedProblem.id), code);
-      localStorage.setItem(LANG_KEY(contestId, selectedProblem.id), language);
+      localStorage.setItem(STORAGE_KEY(contestId, selectedProblem.id, isVirtual), code);
+      localStorage.setItem(LANG_KEY(contestId, selectedProblem.id, isVirtual), language);
     }
     setSelectedProblem(prob);
     setSelectedIdx(idx);
     setResult(null);
-    const savedCode = localStorage.getItem(STORAGE_KEY(contestId, prob.id));
-    const savedLang = localStorage.getItem(LANG_KEY(contestId, prob.id));
+    const savedCode = localStorage.getItem(STORAGE_KEY(contestId, prob.id, isVirtual));
+    const savedLang = localStorage.getItem(LANG_KEY(contestId, prob.id, isVirtual));
     const lang = savedLang || 'cpp';
     setLanguage(lang);
     setCode(savedCode || BOILERPLATES[lang] || '');
@@ -536,6 +579,29 @@ export default function ContestWorkspace() {
                       <h2 className="text-xl font-bold text-gray-900">{selectedProblem.title}</h2>
                     </div>
                   </div>
+                  {(() => {
+                    const virtualActive = isVirtual && virtualSession && Date.now() <= (virtualSession.startMs + virtualSession.durationMs);
+                    const canShowSolution = contestStatus === 'ended' && !virtualActive && !!selectedProblem.solution;
+                    if (!canShowSolution) return null;
+                    return (
+                      <button
+                        onClick={() => {
+                          setResult({
+                            verdict: 'Solution',
+                            stdout: selectedProblem.solution,
+                            stderr: '',
+                            passed_count: 0,
+                            total_count: 0,
+                            runtime_ms: 0,
+                          });
+                          setBottomTab('output');
+                        }}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-white border border-gray-200 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-all shadow-sm"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" /> Solution
+                      </button>
+                    );
+                  })()}
                   {acceptedProblems.includes(selectedProblem.id) && (
                     <div className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-full px-3 py-1 text-xs font-semibold shadow-sm">
                       <CheckCircle className="w-3.5 h-3.5" /> Solved
@@ -776,6 +842,7 @@ export default function ContestWorkspace() {
       <SubmissionHistory
         problemId={selectedProblem?.id}
         isOpen={showHistory}
+        virtualSession={isVirtual ? virtualSession : null}
         onClose={() => setShowHistory(false)}
       />
     </div>

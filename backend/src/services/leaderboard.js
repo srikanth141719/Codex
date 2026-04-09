@@ -1,13 +1,19 @@
 const { redis } = require('../config/db');
 
 /**
- * Codeforces-style penalty leaderboard using Redis Sorted Sets.
- * 
- * Score formula: (solved_count * 10_000_000) - total_penalty
- * This way, more solved problems always rank higher, and among equal solves,
+ * Codeforces-style penalty leaderboard using Redis Sorted Sets, extended with
+ * per-problem scoring that can support partial scores.
+ *
+ * Ranking score formula (for the sorted set):
+ *   (solved_count * 10_000_000) - total_penalty
+ * so more solved problems always rank higher, and among equal solves,
  * lower penalty wins (higher score).
- * 
+ *
  * Penalty per problem = time_of_accept_minutes + 10 * wrong_attempts_before_accept
+ *
+ * Additionally, we track:
+ *   - prob.score: numeric score for a problem (supports partial credit)
+ *   - userData.score: total score across problems (sum of prob.score)
  * 
  * Data structures:
  *   - Sorted Set:   leaderboard:{contest_id}        -> member: user_id, score
@@ -30,6 +36,7 @@ async function updateLeaderboard(contestId, userId, problemId, username, verdict
       username: username,
       solved: '0',
       total_penalty: '0',
+      score: '0',
       problems: '{}'
     };
   }
@@ -47,7 +54,8 @@ async function updateLeaderboard(contestId, userId, problemId, username, verdict
       attempts: 0,
       accepted: false,
       accept_time: null,
-      penalty: 0
+      penalty: 0,
+      score: 0,
     };
   }
 
@@ -75,27 +83,34 @@ async function updateLeaderboard(contestId, userId, problemId, username, verdict
     // Recalculate totals
     let solved = 0;
     let totalPenalty = 0;
+    let totalScore = 0;
     for (const pid in problems) {
       if (problems[pid].accepted) {
         solved++;
         totalPenalty += problems[pid].penalty;
       }
+      // Aggregate score from all problems (accepted or partial)
+      if (typeof problems[pid].score === 'number') {
+        totalScore += problems[pid].score;
+      }
     }
 
     userData.solved = String(solved);
     userData.total_penalty = String(totalPenalty);
+    userData.score = String(totalScore);
 
     // Score: higher is better. More problems solved is always better.
     // For same solve count, lower penalty should rank higher (have higher score).
-    const score = solved * 10000000 - totalPenalty;
+    const rankScore = solved * 10000000 - totalPenalty;
 
-    await redis.zadd(LEADERBOARD_KEY(contestId), score, userId);
+    await redis.zadd(LEADERBOARD_KEY(contestId), rankScore, userId);
   }
 
   await redis.hmset(userKey, {
     username: userData.username,
     solved: userData.solved,
     total_penalty: userData.total_penalty,
+    score: userData.score || '0',
     problems: JSON.stringify(problems)
   });
 
@@ -114,7 +129,7 @@ async function getLeaderboard(contestId) {
   const leaderboard = [];
   for (let i = 0; i < members.length; i += 2) {
     const userId = members[i];
-    const score = parseFloat(members[i + 1]);
+    const rankScore = parseFloat(members[i + 1]);
     const userKey = USER_DATA_KEY(contestId, userId);
     const userData = await redis.hgetall(userKey);
 
@@ -131,6 +146,7 @@ async function getLeaderboard(contestId) {
       username: userData.username || 'Unknown',
       solved: parseInt(userData.solved || '0'),
       penalty: parseInt(userData.total_penalty || '0'),
+      score: parseFloat(userData.score || '0'),
       problems: problems,
     });
   }

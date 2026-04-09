@@ -25,7 +25,7 @@ function getVerdictIcon(verdict) {
   }
 }
 
-export default function SubmissionHistory({ problemId, isOpen, onClose }) {
+export default function SubmissionHistory({ problemId, isOpen, onClose, virtualSession }) {
   const { apiFetch } = useAuth();
   const [submissions, setSubmissions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -35,11 +35,23 @@ export default function SubmissionHistory({ problemId, isOpen, onClose }) {
     if (!isOpen || !problemId) return;
 
     setLoading(true);
-    apiFetch(`/submissions/problem/${problemId}`)
+    let url = `/submissions/problem/${problemId}`;
+    if (virtualSession && virtualSession.startMs && virtualSession.durationMs && Date.now() <= virtualSession.startMs + virtualSession.durationMs) {
+      const start = virtualSession.startMs;
+      const end = virtualSession.startMs + virtualSession.durationMs;
+      const params = new URLSearchParams({
+        virtual: '1',
+        virtual_start: String(start),
+        virtual_end: String(end),
+      });
+      url += `?${params.toString()}`;
+    }
+
+    apiFetch(url)
       .then((data) => setSubmissions(data.submissions || []))
       .catch((err) => console.error('Failed to load submissions:', err))
       .finally(() => setLoading(false));
-  }, [isOpen, problemId, apiFetch]);
+  }, [isOpen, problemId, apiFetch, virtualSession]);
 
   if (!isOpen) return null;
 

@@ -36,6 +36,13 @@ CREATE INDEX idx_contests_start   ON contests(start_time);
 -- ============================================================
 -- PROBLEMS
 -- ============================================================
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'problem_difficulty') THEN
+    CREATE TYPE problem_difficulty AS ENUM ('Easy', 'Medium', 'Hard');
+  END IF;
+END$$;
+
 CREATE TABLE problems (
     id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     contest_id    UUID         NOT NULL REFERENCES contests(id) ON DELETE CASCADE,
@@ -44,6 +51,8 @@ CREATE TABLE problems (
     constraints   TEXT         NOT NULL DEFAULT '',
     sample_input  TEXT         DEFAULT '',
     sample_output TEXT         DEFAULT '',
+    difficulty    problem_difficulty DEFAULT 'Easy',
+    solution      TEXT,
     sort_order    INT          DEFAULT 0,
     created_at    TIMESTAMPTZ  DEFAULT NOW()
 );

@@ -8,6 +8,7 @@ import Home from './pages/Home';
 import CreateContest from './pages/CreateContest';
 import AdminDashboard from './pages/AdminDashboard';
 import ContestWorkspace from './pages/ContestWorkspace';
+import Profile from './pages/Profile';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -42,6 +43,7 @@ function AppRoutes() {
       <Route path="/contests/create" element={<ProtectedRoute><><Navbar /><CreateContest /></></ProtectedRoute>} />
       <Route path="/contests/:id/admin" element={<ProtectedRoute><><Navbar /><AdminDashboard /></></ProtectedRoute>} />
       <Route path="/contests/:id" element={<ProtectedRoute><ContestWorkspace /></ProtectedRoute>} />
+      <Route path="/profile" element={<ProtectedRoute><><Navbar /><Profile /></></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

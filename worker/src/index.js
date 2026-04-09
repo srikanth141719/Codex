@@ -21,22 +21,23 @@ const RUN_RESULT_KEY = (runId) => `run:${runId}`;
 const WORKER_ID = `worker-${process.pid}-${Date.now().toString(36)}`;
 
 /**
- * Leaderboard update logic (same as backend service but runs in worker context)
+ * Leaderboard update logic (mirrors backend service but runs in worker context).
+ * Supports per-problem partial scoring via prob.score and userData.score.
  */
-async function updateLeaderboard(contestId, userId, problemId, username, verdict, contestStartTime) {
+async function updateLeaderboard(contestId, userId, problemId, username, verdict, contestStartTime, passedCount, totalCount) {
   const userKey = `lb:${contestId}:user:${userId}`;
   const leaderboardKey = `leaderboard:${contestId}`;
 
   let userData = await redis.hgetall(userKey);
   if (!userData || !userData.username) {
-    userData = { username, solved: '0', total_penalty: '0', problems: '{}' };
+    userData = { username, solved: '0', total_penalty: '0', score: '0', problems: '{}' };
   }
 
   let problems = {};
   try { problems = JSON.parse(userData.problems || '{}'); } catch (e) { problems = {}; }
 
   if (!problems[problemId]) {
-    problems[problemId] = { attempts: 0, accepted: false, accept_time: null, penalty: 0 };
+    problems[problemId] = { attempts: 0, accepted: false, accept_time: null, penalty: 0, score: 0 };
   }
 
   const prob = problems[problemId];
@@ -49,6 +50,22 @@ async function updateLeaderboard(contestId, userId, problemId, username, verdict
 
   prob.attempts++;
 
+  // Partial scoring (updated on every judged submission)
+  const MAX_PROBLEM_SCORE = 100;
+  const pCount = Number.isFinite(passedCount) ? passedCount : (passedCount ? Number(passedCount) : 0);
+  const tCount = Number.isFinite(totalCount) ? totalCount : (totalCount ? Number(totalCount) : 0);
+  let partialScore = 0;
+  if (tCount > 0 && pCount > 0) {
+    partialScore = (pCount / tCount) * MAX_PROBLEM_SCORE;
+  }
+  if (verdict === 'Accepted') {
+    partialScore = MAX_PROBLEM_SCORE;
+  }
+  if (Number.isFinite(partialScore)) {
+    const prev = typeof prob.score === 'number' ? prob.score : 0;
+    prob.score = Math.max(prev, partialScore);
+  }
+
   if (verdict === 'Accepted') {
     prob.accepted = true;
     const now = new Date();
@@ -57,25 +74,39 @@ async function updateLeaderboard(contestId, userId, problemId, username, verdict
     prob.accept_time = minutesSinceStart;
     prob.penalty = minutesSinceStart + 10 * (prob.attempts - 1);
 
-    let solved = 0, totalPenalty = 0;
+    let solved = 0, totalPenalty = 0, totalScore = 0;
     for (const pid in problems) {
       if (problems[pid].accepted) {
         solved++;
         totalPenalty += problems[pid].penalty;
       }
+      if (typeof problems[pid].score === 'number') {
+        totalScore += problems[pid].score;
+      }
     }
 
     userData.solved = String(solved);
     userData.total_penalty = String(totalPenalty);
+    userData.score = String(totalScore);
 
-    const score = solved * 10000000 - totalPenalty;
-    await redis.zadd(leaderboardKey, score, userId);
+    const rankScore = solved * 10000000 - totalPenalty;
+    await redis.zadd(leaderboardKey, rankScore, userId);
+  }
+
+  // Always recompute total score (even for partial, non-AC submissions)
+  {
+    let totalScore = 0;
+    for (const pid in problems) {
+      if (typeof problems[pid].score === 'number') totalScore += problems[pid].score;
+    }
+    userData.score = String(totalScore);
   }
 
   await redis.hmset(userKey, {
     username: userData.username,
     solved: userData.solved,
     total_penalty: userData.total_penalty,
+    score: userData.score || '0',
     problems: JSON.stringify(problems)
   });
 }
@@ -101,6 +132,7 @@ async function getLeaderboard(contestId) {
       username: userData.username || 'Unknown',
       solved: parseInt(userData.solved || '0'),
       penalty: parseInt(userData.total_penalty || '0'),
+      score: parseFloat(userData.score || '0'),
       problems,
     });
   }
@@ -187,14 +219,19 @@ async function processSubmission(msg, channel) {
          data.submission_id]
       );
 
-      // Update leaderboard only for REAL submissions during contest window
+      // Update leaderboard for REAL submissions during contest window (official)
       const now = new Date();
       const contestEnded = data.contest_end_time ? now > new Date(data.contest_end_time) : false;
       const st = data.submission_type ? String(data.submission_type).toUpperCase() : 'REAL';
       if (data.contest_id && !contestEnded && st === 'REAL') {
+        // Compute partial score based on passed/total test cases.
+        // We use a fixed max score of 100 per problem.
+        const passedCount = result.passed_count || 0;
+        const totalCount = result.total_count || 0;
         await updateLeaderboard(
           data.contest_id, data.user_id, data.problem_id,
-          data.username, result.verdict, data.contest_start_time
+          data.username, result.verdict, data.contest_start_time,
+          passedCount, totalCount
         );
       }
     }
@@ -205,6 +242,19 @@ async function processSubmission(msg, channel) {
       const socket = ioClient(backendUrl, { transports: ['websocket'], timeout: 3000 });
 
       socket.on('connect', () => {
+        // Mask expected/actual outputs during active contests (REAL live window) and for VIRTUAL submissions.
+        const now = new Date();
+        const st = data.submission_type ? String(data.submission_type).toUpperCase() : null;
+        const contestEnded = data.contest_end_time ? now > new Date(data.contest_end_time) : false;
+        const shouldMask =
+          !data.is_run &&
+          data.contest_id &&
+          result.verdict !== 'Accepted' &&
+          ((st === 'REAL' && !contestEnded) || st === 'VIRTUAL');
+
+        const safeStdout = shouldMask ? '' : (result.stdout || '');
+        const safeStderr = shouldMask ? '' : (result.stderr || '');
+
         // Emit submission status to all connected clients
         socket.emit('worker:submission_result', {
           submission_id: data.submission_id,
@@ -213,11 +263,12 @@ async function processSubmission(msg, channel) {
           user_id: data.user_id,
           contest_id: data.contest_id,
           problem_id: data.problem_id,
+          submission_type: data.submission_type,
           verdict: result.verdict,
           runtime_ms: result.runtime_ms,
           memory_kb: result.memory_kb,
-          stdout: result.stdout,
-          stderr: result.stderr,
+          stdout: safeStdout,
+          stderr: safeStderr,
           passed_count: result.passed_count,
           total_count: result.total_count,
         });

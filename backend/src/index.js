@@ -16,6 +16,7 @@ const problemRoutes = require('./routes/problems');
 const testcaseRoutes = require('./routes/testcases');
 const submissionRoutes = require('./routes/submissions');
 const runRoutes = require('./routes/runs');
+const userRoutes = require('./routes/users');
 
 const app = express();
 const server = http.createServer(app);
@@ -61,6 +62,7 @@ app.use('/api/problems', problemRoutes);
 app.use('/api/testcases', testcaseRoutes);
 app.use('/api/submissions', submissionRoutes);
 app.use('/api/runs', runRoutes);
+app.use('/api/users', userRoutes);
 
 // Leaderboard API (public)
 const { getLeaderboard } = require('./services/leaderboard');

@@ -108,6 +108,8 @@ export default function AdminDashboard() {
         constraints: '',
         sample_input: '',
         sample_output: '',
+        difficulty: 'Easy',
+        solution: '',
         sort_order: prev.length,
         testcases: [],
       }];
@@ -376,6 +378,32 @@ export default function AdminDashboard() {
                     <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Sample Output</label>
                     <textarea value={prob.sample_output} onChange={(e) => updateProblemLocal(prob.id, { sample_output: e.target.value })} className="input-field h-16 resize-none font-mono text-xs mt-1" />
                   </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Difficulty</label>
+                    <select
+                      value={prob.difficulty || 'Easy'}
+                      onChange={(e) => updateProblemLocal(prob.id, { difficulty: e.target.value })}
+                      className="input-field mt-1"
+                    >
+                      <option value="Easy">Easy</option>
+                      <option value="Medium">Medium</option>
+                      <option value="Hard">Hard</option>
+                    </select>
+                  </div>
+                  <div />
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Solution (shown after contest ends)</label>
+                  <textarea
+                    value={prob.solution || ''}
+                    onChange={(e) => updateProblemLocal(prob.id, { solution: e.target.value })}
+                    className="input-field h-40 resize-none font-mono text-xs mt-1"
+                    placeholder="Explain approach + include code if you want..."
+                  />
                 </div>
 
                 {/* Testcases */}

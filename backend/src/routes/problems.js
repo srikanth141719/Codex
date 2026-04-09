@@ -8,7 +8,7 @@ const router = express.Router();
 router.post('/:contestId', authMiddleware, async (req, res) => {
   try {
     const { contestId } = req.params;
-    const { title, description, constraints, sample_input, sample_output, sort_order } = req.body;
+    const { title, description, constraints, sample_input, sample_output, sort_order, difficulty, solution } = req.body;
 
     // Verify contest ownership
     const contest = await query('SELECT creator_id FROM contests WHERE id = $1', [contestId]);
@@ -31,9 +31,9 @@ router.post('/:contestId', authMiddleware, async (req, res) => {
     }
 
     const result = await query(
-      `INSERT INTO problems (contest_id, title, description, constraints, sample_input, sample_output, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [contestId, title, description, constraints || '', sample_input || '', sample_output || '', order]
+      `INSERT INTO problems (contest_id, title, description, constraints, sample_input, sample_output, difficulty, solution, sort_order)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [contestId, title, description, constraints || '', sample_input || '', sample_output || '', difficulty || 'Easy', solution || null, order]
     );
 
     res.status(201).json({ problem: result.rows[0] });
@@ -47,7 +47,7 @@ router.post('/:contestId', authMiddleware, async (req, res) => {
 router.put('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description, constraints, sample_input, sample_output, sort_order } = req.body;
+    const { title, description, constraints, sample_input, sample_output, sort_order, difficulty, solution } = req.body;
 
     // Verify ownership via join
     const check = await query(
@@ -72,6 +72,8 @@ router.put('/:id', authMiddleware, async (req, res) => {
     if (constraints !== undefined) { fields.push(`constraints = $${idx++}`); values.push(constraints); }
     if (sample_input !== undefined) { fields.push(`sample_input = $${idx++}`); values.push(sample_input); }
     if (sample_output !== undefined) { fields.push(`sample_output = $${idx++}`); values.push(sample_output); }
+    if (difficulty !== undefined) { fields.push(`difficulty = $${idx++}`); values.push(difficulty); }
+    if (solution !== undefined) { fields.push(`solution = $${idx++}`); values.push(solution); }
     if (sort_order !== undefined) { fields.push(`sort_order = $${idx++}`); values.push(sort_order); }
 
     if (fields.length === 0) {

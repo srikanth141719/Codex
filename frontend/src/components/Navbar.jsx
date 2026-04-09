@@ -59,6 +59,15 @@ export default function Navbar() {
                   <p className="text-xs text-gray-400 mt-0.5">{user?.email}</p>
                 </div>
                 <div className="p-2">
+                  <Link
+                    to="/profile"
+                    className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-700
+                             hover:bg-gray-50 transition-colors rounded-lg font-medium"
+                    id="profile-btn"
+                  >
+                    <User className="w-4 h-4" />
+                    Profile
+                  </Link>
                   <button
                     onClick={handleLogout}
                     className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-red-600

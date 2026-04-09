@@ -163,9 +163,28 @@ router.get('/:id', authMiddleware, async (req, res) => {
     const submission = result.rows[0];
     // Users can only view their own submissions, or contest creator can view all
     if (submission.user_id !== req.user.id) {
-      const contestCheck = await query('SELECT creator_id FROM contests WHERE id = $1', [submission.contest_id]);
+      const contestCheck = await query('SELECT creator_id, start_time, end_time FROM contests WHERE id = $1', [submission.contest_id]);
       if (contestCheck.rows.length === 0 || contestCheck.rows[0].creator_id !== req.user.id) {
         return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
+
+    // Mask expected/actual outputs during active contests (Real or Virtual submissions)
+    const contestMeta = await query(
+      'SELECT start_time, end_time FROM contests WHERE id = $1',
+      [submission.contest_id]
+    );
+    if (contestMeta.rows.length > 0) {
+      const { start_time, end_time } = contestMeta.rows[0];
+      const now = new Date();
+      const isActive =
+        now >= new Date(start_time) &&
+        now <= new Date(end_time) &&
+        (submission.submission_type === 'REAL' || submission.submission_type === 'VIRTUAL');
+
+      if (isActive && submission.verdict && submission.verdict !== 'Accepted') {
+        submission.stdout = '';
+        submission.stderr = '';
       }
     }
 
@@ -177,15 +196,35 @@ router.get('/:id', authMiddleware, async (req, res) => {
 });
 
 // GET /api/submissions/problem/:problemId — Get user's submissions for a problem
+// Supports optional virtual session isolation via query params:
+//   ?virtual=1&virtual_start=ISO_OR_MS&virtual_end=ISO_OR_MS
 router.get('/problem/:problemId', authMiddleware, async (req, res) => {
   try {
+    const { virtual, virtual_start, virtual_end } = req.query;
+    const params = [req.params.problemId, req.user.id];
+    let where = 'problem_id = $1 AND user_id = $2';
+
+    if (virtual === '1' && virtual_start) {
+      // Interpret timestamps; allow ms epoch or ISO 8601
+      const startDate = isNaN(Number(virtual_start))
+        ? new Date(virtual_start)
+        : new Date(Number(virtual_start));
+      const endDate = virtual_end
+        ? (isNaN(Number(virtual_end)) ? new Date(virtual_end) : new Date(Number(virtual_end)))
+        : new Date();
+
+      params.push(startDate);
+      params.push(endDate);
+      where += ` AND submitted_at BETWEEN $3 AND $4`;
+    }
+
     const result = await query(
       `SELECT id, user_id, problem_id, contest_id, language, verdict, runtime_ms, memory_kb, 
               passed_count, total_count, submitted_at
        FROM submissions
-       WHERE problem_id = $1 AND user_id = $2
+       WHERE ${where}
        ORDER BY submitted_at DESC`,
-      [req.params.problemId, req.user.id]
+      params
     );
 
     res.json({ submissions: result.rows });

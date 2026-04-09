@@ -1,13 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import Timer from '../components/Timer';
 import {
   Calendar, Clock, Users, ChevronRight, Trophy, Plus, Zap,
-  Code2, ArrowRight, Sparkles, CircleDot, MoreVertical, PlayCircle, BarChart3
+  Code2, ArrowRight, Sparkles, CircleDot, MoreVertical, PlayCircle, BarChart3, Trash2
 } from 'lucide-react';
 
-function ContestCard({ contest }) {
+function ContestCard({ contest, currentUserId, onDelete }) {
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const now = new Date();
@@ -30,6 +30,7 @@ function ContestCard({ contest }) {
   }
 
   const canShowMenu = status === 'Live' || status === 'Ended';
+  const isCreator = !!currentUserId && contest.creator_id === currentUserId;
 
   return (
     <div
@@ -84,6 +85,18 @@ function ContestCard({ contest }) {
                     <PlayCircle className="w-4 h-4 text-emerald-600" />
                     Take a Virtual Contest
                   </button>
+                  {isCreator && (
+                    <button
+                      className="w-full text-left px-4 py-3 text-sm font-medium text-red-700 hover:bg-red-50 flex items-center gap-2 border-t border-gray-100"
+                      onClick={async () => {
+                        setMenuOpen(false);
+                        await onDelete?.(contest.id);
+                      }}
+                    >
+                      <Trash2 className="w-4 h-4 text-red-600" />
+                      Delete Contest
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -131,21 +144,53 @@ function ContestCard({ contest }) {
 }
 
 export default function Home() {
-  const { apiFetch } = useAuth();
+  const { apiFetch, user } = useAuth();
   const [contests, setContests] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('live');
+
+  const refresh = useMemo(() => async () => {
+    const data = await apiFetch('/contests');
+    if (data.groups) {
+      const all = [
+        ...(data.groups.live || []),
+        ...(data.groups.upcoming || []),
+        ...(data.groups.past || []),
+      ];
+      setContests(all);
+    } else {
+      setContests(data.contests || []);
+    }
+  }, [apiFetch]);
 
   useEffect(() => {
-    apiFetch('/contests')
-      .then((data) => setContests(data.contests || []))
+    refresh()
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [apiFetch]);
+  }, [refresh]);
+
+  async function handleDeleteContest(contestId) {
+    if (!confirm('Delete this contest? This will permanently delete problems, testcases, and submissions.')) return;
+    try {
+      await apiFetch(`/contests/${contestId}`, { method: 'DELETE' });
+      await refresh();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
 
   const now = new Date();
   const live = contests.filter(c => now >= new Date(c.start_time) && now <= new Date(c.end_time));
   const upcoming = contests.filter(c => now < new Date(c.start_time));
   const past = contests.filter(c => now > new Date(c.end_time));
+
+  const tabData = {
+    live,
+    upcoming,
+    past,
+  };
+
+  const shown = tabData[activeTab] || [];
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 via-white to-gray-50">
@@ -217,47 +262,48 @@ export default function Home() {
             </Link>
           </div>
         ) : (
-          <div className="space-y-10">
-            {/* Live */}
-            {live.length > 0 && (
-              <section>
-                <div className="flex items-center gap-2 mb-5">
-                  <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse" />
-                  <h2 className="text-lg font-bold text-gray-900">Live Now</h2>
-                  <span className="bg-emerald-100 text-emerald-700 text-xs font-bold px-2 py-0.5 rounded-full">{live.length}</span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  {live.map(c => <ContestCard key={c.id} contest={c} />)}
-                </div>
-              </section>
-            )}
+          <div className="space-y-6">
+            {/* Tabs */}
+            <div className="flex gap-1 bg-gray-100/80 p-1.5 rounded-2xl w-fit backdrop-blur-sm">
+              {[
+                { key: 'live', label: 'Live Contests', count: live.length },
+                { key: 'upcoming', label: 'Upcoming Contests', count: upcoming.length },
+                { key: 'past', label: 'Past Contests', count: past.length },
+              ].map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => setActiveTab(t.key)}
+                  className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200
+                    ${activeTab === t.key ? 'bg-white text-gray-900 shadow-md' : 'text-gray-500 hover:text-gray-700 hover:bg-white/50'}`}
+                >
+                  <span>{t.label}</span>
+                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                    t.key === 'live' ? 'bg-emerald-100 text-emerald-700' :
+                    t.key === 'upcoming' ? 'bg-blue-100 text-blue-700' :
+                    'bg-gray-100 text-gray-600'
+                  }`}>
+                    {t.count}
+                  </span>
+                </button>
+              ))}
+            </div>
 
-            {/* Upcoming */}
-            {upcoming.length > 0 && (
-              <section>
-                <div className="flex items-center gap-2 mb-5">
-                  <CircleDot className="w-4 h-4 text-blue-500" />
-                  <h2 className="text-lg font-bold text-gray-900">Upcoming</h2>
-                  <span className="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-0.5 rounded-full">{upcoming.length}</span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  {upcoming.map(c => <ContestCard key={c.id} contest={c} />)}
-                </div>
-              </section>
-            )}
-
-            {/* Past */}
-            {past.length > 0 && (
-              <section>
-                <div className="flex items-center gap-2 mb-5">
-                  <Clock className="w-4 h-4 text-gray-400" />
-                  <h2 className="text-lg font-bold text-gray-900">Past Contests</h2>
-                  <span className="bg-gray-100 text-gray-500 text-xs font-bold px-2 py-0.5 rounded-full">{past.length}</span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  {past.map(c => <ContestCard key={c.id} contest={c} />)}
-                </div>
-              </section>
+            {/* List */}
+            {shown.length === 0 ? (
+              <div className="text-center py-14 bg-white rounded-3xl border border-gray-200 shadow-sm">
+                <p className="text-gray-500 font-medium">No contests in this tab.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {shown.map((c) => (
+                  <ContestCard
+                    key={c.id}
+                    contest={c}
+                    currentUserId={user?.id}
+                    onDelete={handleDeleteContest}
+                  />
+                ))}
+              </div>
             )}
           </div>
         )}
