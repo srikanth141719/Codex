@@ -7,7 +7,7 @@ const router = express.Router();
 // POST /api/contests — Create a contest (any authenticated user)
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    const { title, description, start_time, end_time, allowlist } = req.body;
+    const { title, description, start_time, end_time, allowlist, problems } = req.body;
 
     if (!title || !start_time || !end_time) {
       return res.status(400).json({ error: 'Title, start_time, and end_time are required' });
@@ -29,15 +29,70 @@ router.post('/', authMiddleware, async (req, res) => {
       emails.push(req.user.email.toLowerCase());
     }
 
+    await query('BEGIN');
     const result = await query(
       `INSERT INTO contests (title, description, start_time, end_time, creator_id, allowlist)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
       [title, description || '', start, end, req.user.id, emails]
     );
+    const contest = result.rows[0];
 
-    res.status(201).json({ contest: result.rows[0] });
+    // Hotfix: accept difficulty + solution payload during contest creation.
+    if (Array.isArray(problems)) {
+      for (let i = 0; i < problems.length; i++) {
+        const p = problems[i] || {};
+        if (!p.title || !p.description) {
+          await query('ROLLBACK');
+          return res.status(400).json({ error: `Problem ${i + 1} must include title and description` });
+        }
+        const difficulty = p.difficulty || 'Easy';
+        if (!['Easy', 'Medium', 'Hard'].includes(difficulty)) {
+          await query('ROLLBACK');
+          return res.status(400).json({ error: `Problem ${i + 1} difficulty must be Easy, Medium, or Hard` });
+        }
+
+        const insertedProblem = await query(
+          `INSERT INTO problems (contest_id, title, description, constraints, sample_input, sample_output, difficulty, solution, sort_order)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           RETURNING id`,
+          [
+            contest.id,
+            p.title,
+            p.description,
+            p.constraints || '',
+            p.sample_input || '',
+            p.sample_output || '',
+            difficulty,
+            p.solution || null,
+            p.sort_order ?? i,
+          ]
+        );
+
+        const problemId = insertedProblem.rows[0].id;
+        const tcs = Array.isArray(p.testcases) ? p.testcases : [];
+        for (let j = 0; j < tcs.length; j++) {
+          const tc = tcs[j] || {};
+          await query(
+            `INSERT INTO testcases (problem_id, input, expected_output, is_sample, is_hidden, sort_order)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [
+              problemId,
+              tc.input ?? '',
+              tc.expected_output ?? '',
+              tc.is_sample === true,
+              tc.is_hidden !== false,
+              tc.sort_order ?? j,
+            ]
+          );
+        }
+      }
+    }
+
+    await query('COMMIT');
+    res.status(201).json({ contest });
   } catch (err) {
+    try { await query('ROLLBACK'); } catch (e) {}
     console.error('Create contest error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }

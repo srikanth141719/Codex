@@ -70,8 +70,6 @@ export default function Leaderboard({ leaderboard = [], problems = [], currentUs
             <th>User</th>
             <th className="text-center w-16">Solved</th>
             <th className="text-center w-20">Score</th>
-            <th className="text-center w-24">Penalty</th>
-            <th className="text-center w-24">Total Time</th>
             {problems.map((prob, i) => (
               <th key={prob.id} className="text-center min-w-[60px]">
                 <div className="flex flex-col items-center">
@@ -113,12 +111,6 @@ export default function Leaderboard({ leaderboard = [], problems = [], currentUs
                 <span className="text-sm font-mono text-gray-800">
                   {Number.isFinite(entry.score) ? entry.score.toFixed(1) : '0.0'}
                 </span>
-              </td>
-              <td className="text-center">
-                <span className="text-sm font-mono text-gray-600">{entry.penalty}</span>
-              </td>
-              <td className="text-center">
-                <span className="text-sm font-mono text-gray-600">{formatTime(entry.penalty)}</span>
               </td>
               {problems.map((prob) => (
                 <ProblemCell key={prob.id} probData={entry.problems?.[prob.id]} />

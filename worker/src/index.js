@@ -89,8 +89,6 @@ async function updateLeaderboard(contestId, userId, problemId, username, verdict
     userData.total_penalty = String(totalPenalty);
     userData.score = String(totalScore);
 
-    const rankScore = solved * 10000000 - totalPenalty;
-    await redis.zadd(leaderboardKey, rankScore, userId);
   }
 
   // Always recompute total score (even for partial, non-AC submissions)
@@ -100,6 +98,8 @@ async function updateLeaderboard(contestId, userId, problemId, username, verdict
       if (typeof problems[pid].score === 'number') totalScore += problems[pid].score;
     }
     userData.score = String(totalScore);
+    // Hotfix: rank strictly by total score (descending)
+    await redis.zadd(leaderboardKey, totalScore, userId);
   }
 
   await redis.hmset(userKey, {

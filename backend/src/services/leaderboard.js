@@ -26,7 +26,7 @@ const USER_DATA_KEY = (contestId, userId) => `lb:${contestId}:user:${userId}`;
 /**
  * Record a submission result and recalculate leaderboard
  */
-async function updateLeaderboard(contestId, userId, problemId, username, verdict, contestStartTime) {
+async function updateLeaderboard(contestId, userId, problemId, username, verdict, contestStartTime, passedCount, totalCount) {
   const userKey = USER_DATA_KEY(contestId, userId);
 
   // Get or initialize user data
@@ -71,6 +71,22 @@ async function updateLeaderboard(contestId, userId, problemId, username, verdict
 
   prob.attempts++;
 
+  // Partial scoring (updated on every judged submission)
+  const MAX_PROBLEM_SCORE = 100;
+  const pCount = Number.isFinite(passedCount) ? passedCount : (passedCount ? Number(passedCount) : 0);
+  const tCount = Number.isFinite(totalCount) ? totalCount : (totalCount ? Number(totalCount) : 0);
+  let partialScore = 0;
+  if (tCount > 0 && pCount > 0) {
+    partialScore = (pCount / tCount) * MAX_PROBLEM_SCORE;
+  }
+  if (verdict === 'Accepted') {
+    partialScore = MAX_PROBLEM_SCORE;
+  }
+  if (Number.isFinite(partialScore)) {
+    const prev = typeof prob.score === 'number' ? prob.score : 0;
+    prob.score = Math.max(prev, partialScore);
+  }
+
   if (verdict === 'Accepted') {
     prob.accepted = true;
     const now = new Date();
@@ -99,11 +115,18 @@ async function updateLeaderboard(contestId, userId, problemId, username, verdict
     userData.total_penalty = String(totalPenalty);
     userData.score = String(totalScore);
 
-    // Score: higher is better. More problems solved is always better.
-    // For same solve count, lower penalty should rank higher (have higher score).
-    const rankScore = solved * 10000000 - totalPenalty;
+    // hotfix: ranking is strictly by total score
+    await redis.zadd(LEADERBOARD_KEY(contestId), totalScore, userId);
+  }
 
-    await redis.zadd(LEADERBOARD_KEY(contestId), rankScore, userId);
+  // Always recompute total score (even for partial, non-AC submissions)
+  {
+    let totalScore = 0;
+    for (const pid in problems) {
+      if (typeof problems[pid].score === 'number') totalScore += problems[pid].score;
+    }
+    userData.score = String(totalScore);
+    await redis.zadd(LEADERBOARD_KEY(contestId), totalScore, userId);
   }
 
   await redis.hmset(userKey, {

@@ -33,6 +33,8 @@ export default function CreateContest() {
       constraints: '',
       sample_input: '',
       sample_output: '',
+      difficulty: 'Easy',
+      solution: '',
       testcases: [],
     }]);
     setExpandedProblem(problems.length);
@@ -104,7 +106,7 @@ export default function CreateContest() {
         .map(e => e.trim())
         .filter(Boolean);
 
-      // 1. Create contest
+      // 1. Create contest (with problems payload)
       const contestData = await apiFetch('/contests', {
         method: 'POST',
         body: JSON.stringify({
@@ -113,43 +115,27 @@ export default function CreateContest() {
           start_time: start.toISOString(),
           end_time: end.toISOString(),
           allowlist,
-        }),
-      });
-
-      const contestId = contestData.contest.id;
-
-      // 2. Create problems + testcases
-      for (let i = 0; i < problems.length; i++) {
-        const prob = problems[i];
-        const probData = await apiFetch(`/problems/${contestId}`, {
-          method: 'POST',
-          body: JSON.stringify({
+          problems: problems.map((prob, i) => ({
             title: prob.title,
             description: prob.description,
             constraints: prob.constraints,
             sample_input: prob.sample_input,
             sample_output: prob.sample_output,
+            difficulty: prob.difficulty || 'Easy',
+            solution: prob.solution || '',
             sort_order: i,
-          }),
-        });
-
-        const problemId = probData.problem.id;
-
-        // Create testcases for this problem
-        for (let j = 0; j < prob.testcases.length; j++) {
-          const tc = prob.testcases[j];
-          await apiFetch(`/testcases/${problemId}`, {
-            method: 'POST',
-            body: JSON.stringify({
+            testcases: (prob.testcases || []).map((tc, j) => ({
               input: tc.input,
               expected_output: tc.expected_output,
               is_sample: tc.is_sample,
               is_hidden: tc.is_hidden,
               sort_order: j,
-            }),
-          });
-        }
-      }
+            })),
+          })),
+        }),
+      });
+
+      const contestId = contestData.contest.id;
 
       navigate(`/contests/${contestId}/admin`);
     } catch (err) {
@@ -390,6 +376,31 @@ export default function CreateContest() {
                         placeholder="e.g., 15"
                       />
                     </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">Difficulty Tag</label>
+                      <select
+                        value={prob.difficulty || 'Easy'}
+                        onChange={(e) => updateProblem(idx, 'difficulty', e.target.value)}
+                        className="input-field"
+                      >
+                        <option value="Easy">Easy</option>
+                        <option value="Medium">Medium</option>
+                        <option value="Hard">Hard</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">Solution + Explanation</label>
+                    <textarea
+                      value={prob.solution || ''}
+                      onChange={(e) => updateProblem(idx, 'solution', e.target.value)}
+                      className="input-field h-28 resize-none font-mono text-xs"
+                      placeholder="Write explanation and optional reference solution code..."
+                    />
                   </div>
 
                   {/* Testcases */}

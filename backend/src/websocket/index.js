@@ -28,6 +28,7 @@ function setupWebSocket(io) {
       try {
         const leaderboard = await getLeaderboard(contestId);
         socket.emit('leaderboard:update', { contestId, leaderboard });
+        socket.emit('leaderboard_update', { contestId, leaderboard });
       } catch (err) {
         console.error('Error sending initial leaderboard:', err);
       }
@@ -49,6 +50,10 @@ function setupWebSocket(io) {
     socket.on('worker:leaderboard_update', (data) => {
       console.log(`Leaderboard update for contest ${data.contest_id}`);
       io.to(`contest:${data.contest_id}`).emit('leaderboard:update', {
+        contestId: data.contest_id,
+        leaderboard: data.leaderboard,
+      });
+      io.to(`contest:${data.contest_id}`).emit('leaderboard_update', {
         contestId: data.contest_id,
         leaderboard: data.leaderboard,
       });
@@ -74,6 +79,7 @@ function emitSubmissionStatus(io, userId, submission) {
  */
 function emitLeaderboardUpdate(io, contestId, leaderboard) {
   io.to(`contest:${contestId}`).emit('leaderboard:update', { contestId, leaderboard });
+  io.to(`contest:${contestId}`).emit('leaderboard_update', { contestId, leaderboard });
 }
 
 module.exports = { setupWebSocket, emitSubmissionStatus, emitLeaderboardUpdate };

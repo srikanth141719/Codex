@@ -58,6 +58,7 @@ export default function ContestWorkspace() {
 
   // View state
   const [leftView, setLeftView] = useState(initialView); // problem, leaderboard
+  const [leftProblemTab, setLeftProblemTab] = useState('description'); // description, solution
   const [bottomTab, setBottomTab] = useState('output');
 
   // Leaderboard
@@ -256,15 +257,23 @@ export default function ContestWorkspace() {
       console.warn('Socket connection error (will retry):', err.message);
     });
 
-    socket.on('leaderboard:update', (data) => {
+    const handleLeaderboardUpdate = (data) => {
       if (data.contestId === contestId) {
         setLeaderboard(data.leaderboard);
       }
-    });
+    };
+    socket.on('leaderboard:update', handleLeaderboardUpdate);
+    socket.on('leaderboard_update', handleLeaderboardUpdate);
 
     socket.on('submission:status', (data) => {
       if (data.user_id === user?.id) {
         handleSubmissionResult(data);
+      }
+      // Keep standings fresh for all participants while viewing leaderboard.
+      if (!isVirtual && leftView === 'leaderboard' && data?.contest_id === contestId) {
+        apiFetch(`/leaderboard/${contestId}`)
+          .then((d) => setLeaderboard(d.leaderboard || []))
+          .catch(() => {});
       }
     });
 
@@ -279,7 +288,15 @@ export default function ContestWorkspace() {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [contestId, token, user, isVirtual]);
+  }, [contestId, token, user, isVirtual, leftView, apiFetch]);
+
+  // Always fetch latest standings whenever user opens Standings tab.
+  useEffect(() => {
+    if (leftView !== 'leaderboard' || isVirtual) return;
+    apiFetch(`/leaderboard/${contestId}`)
+      .then((data) => setLeaderboard(data.leaderboard || []))
+      .catch(console.error);
+  }, [leftView, contestId, apiFetch, isVirtual]);
 
   function handleSubmissionResult(data) {
     // Ignore runs/submissions that are not the most recent request (best-effort)
@@ -352,6 +369,7 @@ export default function ContestWorkspace() {
     }
     setSelectedProblem(prob);
     setSelectedIdx(idx);
+    setLeftProblemTab('description');
     setResult(null);
     const savedCode = localStorage.getItem(STORAGE_KEY(contestId, prob.id, isVirtual));
     const savedLang = localStorage.getItem(LANG_KEY(contestId, prob.id, isVirtual));
@@ -579,29 +597,6 @@ export default function ContestWorkspace() {
                       <h2 className="text-xl font-bold text-gray-900">{selectedProblem.title}</h2>
                     </div>
                   </div>
-                  {(() => {
-                    const virtualActive = isVirtual && virtualSession && Date.now() <= (virtualSession.startMs + virtualSession.durationMs);
-                    const canShowSolution = contestStatus === 'ended' && !virtualActive && !!selectedProblem.solution;
-                    if (!canShowSolution) return null;
-                    return (
-                      <button
-                        onClick={() => {
-                          setResult({
-                            verdict: 'Solution',
-                            stdout: selectedProblem.solution,
-                            stderr: '',
-                            passed_count: 0,
-                            total_count: 0,
-                            runtime_ms: 0,
-                          });
-                          setBottomTab('output');
-                        }}
-                        className="flex items-center gap-2 px-3 py-1.5 bg-white border border-gray-200 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-all shadow-sm"
-                      >
-                        <ChevronRight className="w-3.5 h-3.5" /> Solution
-                      </button>
-                    );
-                  })()}
                   {acceptedProblems.includes(selectedProblem.id) && (
                     <div className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-full px-3 py-1 text-xs font-semibold shadow-sm">
                       <CheckCircle className="w-3.5 h-3.5" /> Solved
@@ -609,11 +604,47 @@ export default function ContestWorkspace() {
                   )}
                 </div>
 
-                {/* Description */}
-                <div className="prose prose-sm max-w-none text-gray-700 mb-8 leading-relaxed whitespace-pre-wrap">
-                  {selectedProblem.description}
-                </div>
+                {/* Description/Solution tabs in LEFT pane */}
+                {(() => {
+                  const virtualActive = isVirtual && virtualSession && Date.now() <= (virtualSession.startMs + virtualSession.durationMs);
+                  const canShowSolution = contestStatus === 'ended' && !virtualActive && !!selectedProblem.solution;
+                  return (
+                    <div className="flex items-center gap-1 mb-5 bg-gray-100/80 p-1 rounded-xl w-fit">
+                      <button
+                        onClick={() => setLeftProblemTab('description')}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                          leftProblemTab === 'description' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                      >
+                        Problem Description
+                      </button>
+                      {canShowSolution && (
+                        <button
+                          onClick={() => setLeftProblemTab('solution')}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                            leftProblemTab === 'solution' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                          }`}
+                        >
+                          Solution
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
 
+                {/* Left-pane content */}
+                {leftProblemTab === 'solution' ? (
+                  <div className="prose prose-sm max-w-none text-gray-700 mb-8 leading-relaxed whitespace-pre-wrap">
+                    {selectedProblem.solution || 'No solution available yet.'}
+                  </div>
+                ) : (
+                  <div className="prose prose-sm max-w-none text-gray-700 mb-8 leading-relaxed whitespace-pre-wrap">
+                    {selectedProblem.description}
+                  </div>
+                )}
+
+                {leftProblemTab !== 'solution' && (
+                  <>
                 {/* Constraints */}
                 {selectedProblem.constraints && (
                   <div className="mb-8">
@@ -667,6 +698,8 @@ export default function ContestWorkspace() {
                     </div>
                   ))}
                 </div>
+                  </>
+                )}
               </div>
             ) : (
               <div className="flex items-center justify-center h-full text-gray-300">

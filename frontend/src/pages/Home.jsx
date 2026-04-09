@@ -13,6 +13,7 @@ function ContestCard({ contest, currentUserId, onDelete }) {
   const now = new Date();
   const start = new Date(contest.start_time);
   const end = new Date(contest.end_time);
+  const isCreator = !!currentUserId && contest?.creator_id === currentUserId;
   
   let status, statusBg, statusDot;
   if (now < start) {
@@ -29,8 +30,7 @@ function ContestCard({ contest, currentUserId, onDelete }) {
     statusDot = 'bg-gray-400';
   }
 
-  const canShowMenu = status === 'Live' || status === 'Ended';
-  const isCreator = !!currentUserId && contest.creator_id === currentUserId;
+  const canShowMenu = status === 'Live' || status === 'Ended' || isCreator;
 
   return (
     <div
@@ -86,16 +86,25 @@ function ContestCard({ contest, currentUserId, onDelete }) {
                     Take a Virtual Contest
                   </button>
                   {isCreator && (
-                    <button
-                      className="w-full text-left px-4 py-3 text-sm font-medium text-red-700 hover:bg-red-50 flex items-center gap-2 border-t border-gray-100"
-                      onClick={async () => {
-                        setMenuOpen(false);
-                        await onDelete?.(contest.id);
-                      }}
-                    >
-                      <Trash2 className="w-4 h-4 text-red-600" />
-                      Delete Contest
-                    </button>
+                    <>
+                      <button
+                        className="w-full text-left px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-2 border-t border-gray-100"
+                        onClick={() => navigate(`/contests/${contest.id}/admin`)}
+                      >
+                        <BarChart3 className="w-4 h-4 text-violet-600" />
+                        Edit Contest
+                      </button>
+                      <button
+                        className="w-full text-left px-4 py-3 text-sm font-medium text-red-700 hover:bg-red-50 flex items-center gap-2"
+                        onClick={async () => {
+                          setMenuOpen(false);
+                          await onDelete?.(contest.id);
+                        }}
+                      >
+                        <Trash2 className="w-4 h-4 text-red-600" />
+                        Delete Contest
+                      </button>
+                    </>
                   )}
                 </div>
               )}
@@ -144,24 +153,36 @@ function ContestCard({ contest, currentUserId, onDelete }) {
 }
 
 export default function Home() {
-  const { apiFetch, user } = useAuth();
+  const { apiFetch, user, token } = useAuth();
   const [contests, setContests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('live');
 
   const refresh = useMemo(() => async () => {
-    const data = await apiFetch('/contests');
+    let data;
+    try {
+      data = await apiFetch('/contests');
+    } catch (err) {
+      // Graceful fallback: if auth has expired, avoid hard crash in UI.
+      if ((err?.message || '').toLowerCase().includes('unauthorized') || !token) {
+        const res = await fetch('/api/contests');
+        if (!res.ok) throw err;
+        data = await res.json();
+      } else {
+        throw err;
+      }
+    }
     if (data.groups) {
       const all = [
-        ...(data.groups.live || []),
-        ...(data.groups.upcoming || []),
-        ...(data.groups.past || []),
+        ...(data?.groups?.live || []),
+        ...(data?.groups?.upcoming || []),
+        ...(data?.groups?.past || []),
       ];
       setContests(all);
     } else {
-      setContests(data.contests || []);
+      setContests(data?.contests || []);
     }
-  }, [apiFetch]);
+  }, [apiFetch, token]);
 
   useEffect(() => {
     refresh()
@@ -180,9 +201,9 @@ export default function Home() {
   }
 
   const now = new Date();
-  const live = contests.filter(c => now >= new Date(c.start_time) && now <= new Date(c.end_time));
-  const upcoming = contests.filter(c => now < new Date(c.start_time));
-  const past = contests.filter(c => now > new Date(c.end_time));
+  const live = contests?.filter(c => now >= new Date(c.start_time) && now <= new Date(c.end_time)) || [];
+  const upcoming = contests?.filter(c => now < new Date(c.start_time)) || [];
+  const past = contests?.filter(c => now > new Date(c.end_time)) || [];
 
   const tabData = {
     live,
