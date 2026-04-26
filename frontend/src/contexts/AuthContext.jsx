@@ -48,14 +48,25 @@ export function AuthProvider({ children }) {
     return data;
   }, []);
 
-  const signup = useCallback(async (username, email, password) => {
-    const res = await fetch(`${API_BASE}/auth/signup`, {
+  const sendOtp = useCallback(async (username, email, password) => {
+    const res = await fetch(`${API_BASE}/auth/send-otp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, email, password }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Signup failed');
+    if (!res.ok) throw new Error(data.error || 'Failed to send OTP');
+    return data;
+  }, []);
+
+  const verifyOtp = useCallback(async (username, email, password, otp) => {
+    const res = await fetch(`${API_BASE}/auth/verify-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, email, password, otp }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'OTP Verification failed');
 
     localStorage.setItem('codex_token', data.token);
     setToken(data.token);
@@ -82,7 +93,7 @@ export function AuthProvider({ children }) {
   }, [token]);
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, signup, logout, apiFetch }}>
+    <AuthContext.Provider value={{ user, token, loading, login, sendOtp, verifyOtp, logout, apiFetch }}>
       {children}
     </AuthContext.Provider>
   );

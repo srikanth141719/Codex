@@ -4,20 +4,27 @@ import { useAuth } from '../contexts/AuthContext';
 import { Code2, Eye, EyeOff, Zap, Terminal, Trophy, Users } from 'lucide-react';
 
 export default function Signup() {
-  const { signup } = useAuth();
+  const { sendOtp, verifyOtp } = useAuth();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState(1);
+  const [otp, setOtp] = useState('');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
-      await signup(username, email, password);
+      if (step === 1) {
+        await sendOtp(username, email, password);
+        setStep(2);
+      } else {
+        await verifyOtp(username, email, password, otp);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -103,36 +110,55 @@ export default function Signup() {
                 </div>
               )}
 
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Username</label>
-                <input id="signup-username" type="text" value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  className="input-field py-3" placeholder="Choose a username" required />
-              </div>
+              {step === 1 ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Username</label>
+                    <input id="signup-username" type="text" value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      className="input-field py-3" placeholder="Choose a username" required />
+                  </div>
 
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Email</label>
-                <input id="signup-email" type="email" value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="input-field py-3" placeholder="you@example.com" required />
-              </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Email</label>
+                    <input id="signup-email" type="email" value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="input-field py-3" placeholder="you@example.com" required />
+                  </div>
 
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Password</label>
-                <div className="relative">
-                  <input id="signup-password" type={showPassword ? 'text' : 'password'}
-                    value={password} onChange={(e) => setPassword(e.target.value)}
-                    className="input-field py-3 pr-10" placeholder="Min 6 characters" required minLength={6} />
-                  <button type="button" onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors">
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Password</label>
+                    <div className="relative">
+                      <input id="signup-password" type={showPassword ? 'text' : 'password'}
+                        value={password} onChange={(e) => setPassword(e.target.value)}
+                        className="input-field py-3 pr-10" placeholder="Min 6 characters" required minLength={6} />
+                      <button type="button" onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors">
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="text-center mb-4">
+                    <p className="text-sm text-gray-600">
+                      We sent a 6-digit verification code to <br/>
+                      <span className="font-semibold text-gray-900">{email}</span>.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Verification Code</label>
+                    <input id="signup-otp" type="text" value={otp}
+                      onChange={(e) => setOtp(e.target.value)}
+                      className="input-field py-3 text-center tracking-widest text-lg font-mono" placeholder="123456" required maxLength={6} />
+                  </div>
+                </>
+              )}
 
               <button id="signup-submit" type="submit" disabled={loading}
                 className="w-full py-3 bg-gradient-to-r from-emerald-500 to-green-600 text-white font-semibold rounded-xl hover:from-emerald-600 hover:to-green-700 disabled:opacity-50 transition-all shadow-lg shadow-emerald-200 hover:shadow-xl hover:shadow-emerald-300 flex items-center justify-center gap-2">
-                {loading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Create Account'}
+                {loading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (step === 1 ? 'Continue' : 'Verify & Create Account')}
               </button>
             </form>
 

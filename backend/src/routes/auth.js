@@ -1,13 +1,21 @@
+require('dotenv').config();
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { query } = require('../config/db');
 const { authMiddleware, JWT_SECRET } = require('../middleware/auth');
 
+const { createClient } = require('@supabase/supabase-js');
+
+// Initialize Supabase Client
+const supabaseUrl = process.env.SUPABASE_URL || 'https://placeholder.supabase.co';
+const supabaseKey = process.env.SUPABASE_ANON_KEY || 'placeholder';
+const supabase = createClient(supabaseUrl, supabaseKey);
+
 const router = express.Router();
 
-// POST /api/auth/signup
-router.post('/signup', async (req, res) => {
+// POST /api/auth/send-otp
+router.post('/send-otp', async (req, res) => {
   try {
     const { username, email, password } = req.body;
 
@@ -28,6 +36,43 @@ router.post('/signup', async (req, res) => {
       return res.status(409).json({ error: 'User with this email or username already exists' });
     }
 
+    // Register user in Supabase to trigger OTP
+    const { data, error } = await supabase.auth.signUp({
+      email: email.toLowerCase(),
+      password,
+    });
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    res.status(200).json({ message: 'OTP sent successfully' });
+  } catch (err) {
+    console.error('Send OTP error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/auth/verify-otp
+router.post('/verify-otp', async (req, res) => {
+  try {
+    const { username, email, password, otp } = req.body;
+
+    if (!username || !email || !password || !otp) {
+      return res.status(400).json({ error: 'Username, email, password, and OTP are required' });
+    }
+
+    // Verify OTP with Supabase
+    const { data, error } = await supabase.auth.verifyOtp({
+      email: email.toLowerCase(),
+      token: otp,
+      type: 'signup',
+    });
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
     const password_hash = await bcrypt.hash(password, 12);
     const result = await query(
       'INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING id, username, email, created_at',
@@ -43,10 +88,11 @@ router.post('/signup', async (req, res) => {
 
     res.status(201).json({ user, token });
   } catch (err) {
-    console.error('Signup error:', err);
+    console.error('Verify OTP error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
 
 // POST /api/auth/login
 router.post('/login', async (req, res) => {

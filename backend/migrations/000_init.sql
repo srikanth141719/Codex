@@ -5,7 +5,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- ============================================================
 -- USERS
 -- ============================================================
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     username    VARCHAR(50)  UNIQUE NOT NULL,
     email       VARCHAR(255) UNIQUE NOT NULL,
@@ -13,12 +13,12 @@ CREATE TABLE users (
     created_at  TIMESTAMPTZ  DEFAULT NOW()
 );
 
-CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
 -- ============================================================
 -- CONTESTS
 -- ============================================================
-CREATE TABLE contests (
+CREATE TABLE IF NOT EXISTS contests (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     title       VARCHAR(255) NOT NULL,
     description TEXT,
@@ -30,8 +30,8 @@ CREATE TABLE contests (
     CONSTRAINT  chk_times CHECK (end_time > start_time)
 );
 
-CREATE INDEX idx_contests_creator ON contests(creator_id);
-CREATE INDEX idx_contests_start   ON contests(start_time);
+CREATE INDEX IF NOT EXISTS idx_contests_creator ON contests(creator_id);
+CREATE INDEX IF NOT EXISTS idx_contests_start   ON contests(start_time);
 
 -- ============================================================
 -- PROBLEMS
@@ -43,7 +43,7 @@ BEGIN
   END IF;
 END$$;
 
-CREATE TABLE problems (
+CREATE TABLE IF NOT EXISTS problems (
     id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     contest_id    UUID         NOT NULL REFERENCES contests(id) ON DELETE CASCADE,
     title         VARCHAR(255) NOT NULL,
@@ -57,12 +57,12 @@ CREATE TABLE problems (
     created_at    TIMESTAMPTZ  DEFAULT NOW()
 );
 
-CREATE INDEX idx_problems_contest ON problems(contest_id);
+CREATE INDEX IF NOT EXISTS idx_problems_contest ON problems(contest_id);
 
 -- ============================================================
 -- TEST CASES
 -- ============================================================
-CREATE TABLE testcases (
+CREATE TABLE IF NOT EXISTS testcases (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     problem_id      UUID    NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
     input           TEXT    NOT NULL,
@@ -73,12 +73,12 @@ CREATE TABLE testcases (
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_testcases_problem ON testcases(problem_id);
+CREATE INDEX IF NOT EXISTS idx_testcases_problem ON testcases(problem_id);
 
 -- ============================================================
 -- SUBMISSIONS
 -- ============================================================
-CREATE TABLE submissions (
+CREATE TABLE IF NOT EXISTS submissions (
     id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id      UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     problem_id   UUID         NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
@@ -96,8 +96,8 @@ CREATE TABLE submissions (
     submitted_at TIMESTAMPTZ  DEFAULT NOW()
 );
 
-CREATE INDEX idx_submissions_user     ON submissions(user_id);
-CREATE INDEX idx_submissions_problem  ON submissions(problem_id);
-CREATE INDEX idx_submissions_contest  ON submissions(contest_id);
-CREATE INDEX idx_submissions_verdict  ON submissions(verdict);
-CREATE INDEX idx_submissions_combo    ON submissions(user_id, problem_id, contest_id);
+CREATE INDEX IF NOT EXISTS idx_submissions_user     ON submissions(user_id);
+CREATE INDEX IF NOT EXISTS idx_submissions_problem  ON submissions(problem_id);
+CREATE INDEX IF NOT EXISTS idx_submissions_contest  ON submissions(contest_id);
+CREATE INDEX IF NOT EXISTS idx_submissions_verdict  ON submissions(verdict);
+CREATE INDEX IF NOT EXISTS idx_submissions_combo    ON submissions(user_id, problem_id, contest_id);
